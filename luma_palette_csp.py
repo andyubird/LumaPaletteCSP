@@ -22,7 +22,7 @@ Dependencies:
 import socket, json, math, sys, platform, threading, queue, colorsys, time, os
 import base64
 from urllib.parse import urlparse, parse_qs
-from tkinter import Tk, Canvas, Label, Frame, PhotoImage
+from tkinter import Tk, Canvas, Label, Frame, PhotoImage, Button
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CONFIG
@@ -32,6 +32,38 @@ SLIDER_W      = 24        # px, width of the lightness slider
 SLIDER_GAP    = 12        # px, gap between wheel and slider
 CURSOR_OFFSET = (30, 30)
 MAX_CHROMA    = 0.20      # OKLCH max chroma for the wheel edge
+
+# Runtime toggles (mutated by tray menu; read by the hotkey gate)
+SETTINGS = {"restrict_to_csp": False, "show_hotkey": None}
+APP_REF = [None]  # populated once LumaPaletteApp is constructed
+
+# (label, pynput GlobalHotKeys combo string); None = disabled
+HOTKEY_PRESETS = [
+    ("None (disabled)", None),
+    ("F7", "<f7>"),
+    ("F8", "<f8>"),
+    ("F9", "<f9>"),
+    ("Ctrl+Shift+P", "<ctrl>+<shift>+p"),
+    ("Ctrl+Alt+P", "<ctrl>+<alt>+p"),
+]
+
+def is_csp_foreground():
+    """True if the OS foreground window belongs to Clip Studio Paint.
+    On non-Windows platforms we can't cheaply check, so don't restrict."""
+    if platform.system() != "Windows":
+        return True
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        hwnd = u32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        length = u32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        u32.GetWindowTextW(hwnd, buf, length + 1)
+        return "CLIP STUDIO PAINT" in buf.value.upper()
+    except Exception:
+        return False
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CSP COMPANION CRYPTO (from chocolatkey/clipremote)
@@ -62,13 +94,58 @@ def make_new_password() -> str:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TYPE_CLIENT = b'\x01'; TERM = b'\x00'; MAX_U32 = 4294967295
 
+# Persisted session — after a successful Authenticate, the rotated password
+# becomes the next session's credential, so we can skip the QR scan as long
+# as CSP desktop hasn't been restarted.
+_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
+
+def save_session(host, port, password, generation):
+    try:
+        with open(_SESSION_PATH, "w", encoding="utf-8") as f:
+            json.dump({"host": host, "port": port,
+                       "password": password, "generation": generation}, f)
+    except Exception as e:
+        print(f"[SESSION] save failed: {e}")
+
+def load_session():
+    try:
+        with open(_SESSION_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+# Raw wire log — tee every byte we send/receive to wire.log for offline diff
+# against the phone-app capture. Set to None to disable.
+_WIRE_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wire.log")
+try:
+    _WIRE_LOG = open(_WIRE_LOG_PATH, "w", encoding="utf-8", buffering=1)
+    _WIRE_LOG.write(f"# wire log started {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+except Exception:
+    _WIRE_LOG = None
+
+def _wire(direction, data: bytes):
+    if _WIRE_LOG is None:
+        return
+    # Render like Wireshark "Follow TCP Stream": printables verbatim, others as '.'
+    ascii_view = "".join(chr(b) if 32 <= b < 127 else "." for b in data)
+    _WIRE_LOG.write(f"{time.time():.3f} {direction} {len(data):4d}B  {ascii_view}\n")
+
+# Magic sentinel CSP accepts in place of the current password when the
+# client wants to reconnect without rescanning the QR. Observed in the
+# phone companion app's reconnect capture (see ReconnectStreamcontent.txt).
+RECONNECT_MARKER = "{{(([[reconnection request marker]]))}}\r\n"
+
 class CSPConnection:
-    def __init__(self, host, port, password, generation):
+    def __init__(self, host, port, password, generation, reconnect=False):
         self.host, self.port = host, port
         self.password, self.generation = password, generation
+        self.reconnect = reconnect
         self.sock = None; self.serial = 0
         self.lock = threading.Lock(); self.recv_buffer = b""
         self.connected = False
+        self._last_rgb = None  # cached main color — SyncColorCircleUIState only
+                               # echoes color fields when they changed since the
+                               # previous sync, so we keep the last known value.
 
     def connect(self):
         print(f"[CSP] Connecting to {self.host}:{self.port}...")
@@ -79,8 +156,18 @@ class CSPConnection:
         self._authenticate()
 
     def _authenticate(self):
-        curr_token = obfuscate_auth(self.password)
-        new_pass = make_new_password()
+        # Reconnect handshake (observed in PHONERECONNECT capture):
+        #   curr = obfuscated magic marker string
+        #   new  = SAME password we sent as `new` during initial auth — CSP
+        #          stored it as the expected credential and re-verifies it here.
+        # First-time auth: curr = QR password, new = freshly generated password
+        # (which becomes the value we must re-send on every future reconnect).
+        if self.reconnect:
+            curr_token = obfuscate_auth(RECONNECT_MARKER)
+            new_pass = self.password
+        else:
+            curr_token = obfuscate_auth(self.password)
+            new_pass = make_new_password()
         new_token = obfuscate_auth(new_pass)
         detail = json.dumps([self.generation, curr_token, new_token], separators=(",",":"))
         resp = self._send_command("Authenticate", detail)
@@ -88,8 +175,21 @@ class CSPConnection:
             self.password = new_pass
             d = resp.get("detail", {})
             print(f"[CSP] Authenticated! Server: {d.get('RemoteCommandSpecVersionOfServer','?')}")
+            save_session(self.host, self.port, self.password, self.generation)
+            self._activate()
         else:
             print(f"[CSP] Auth FAILED: {resp}"); self.connected = False
+
+    def _activate(self):
+        """Replicate the pre-Sync ritual from the mobile companion capture.
+        Without this, CSP keeps returning detail={} to SyncColorCircleUIState.
+        Order matches bytes observed on the wire (see PROTOCOL.md)."""
+        self._send_command("TellHeartbeat", '{"IdleTimerResetRequested":true}')
+        self._send_command("GetModifyKeyString",
+            '{"CtrlPushed":false,"AltPushed":false,"ShiftPushed":false}')
+        self._send_command("GetServerSelectedTabKind")
+        self._send_command("SetServerSelectedTabKind")
+        self._send_command("TellHeartbeat", '{"IdleTimerResetRequested":true}')
 
     def _build_message(self, command, serial, detail=""):
         body = (f"$tcp_remote_command_protocol_version=1.0"
@@ -102,6 +202,7 @@ class CSPConnection:
             if not self.connected and command != "Authenticate": return None
             s = self.serial; self.serial += 1
             msg = self._build_message(command, s, detail)
+            _wire("TX", msg)
             try: self.sock.sendall(msg)
             except (OSError, ConnectionError) as e:
                 print(f"[CSP] Send error: {e}"); self.connected = False; return None
@@ -116,6 +217,7 @@ class CSPConnection:
                 self.sock.settimeout(max(0.1, deadline - time.time()))
                 chunk = self.sock.recv(8192)
                 if not chunk: self.connected = False; return None
+                _wire("RX", chunk)
                 self.recv_buffer += chunk
             except socket.timeout: continue
             except (OSError, ConnectionError): self.connected = False; return None
@@ -130,8 +232,36 @@ class CSPConnection:
             raw = self.recv_buffer[start:idx+1]
             self.recv_buffer = self.recv_buffer[idx+1:]
             p = self._parse(raw)
-            if p and p.get("serial") == expected: return p
+            if p:
+                self._absorb_color(p)
+                if p.get("serial") == expected: return p
         return None
+
+    def _absorb_color(self, p):
+        """Pick up color fields from any message — responses AND server
+        pushes — so changes made in CSP's own picker keep _last_rgb fresh.
+        Two known field variants are in play:
+          * HSVColorH/S/V        → SetCurrentColor / GetCurrentColor
+          * HSVColorMainH/S/V    → SyncColorCircleUIState
+        """
+        d = p.get("detail") or {}
+        if not isinstance(d, dict):
+            return
+        if "HSVColorH" in d and "HSVColorS" in d and "HSVColorV" in d:
+            h = (d["HSVColorH"]/MAX_U32)*360
+            s = (d["HSVColorS"]/MAX_U32)*100
+            v = (d["HSVColorV"]/MAX_U32)*100
+        elif "HSVColorMainH" in d:
+            h = (d["HSVColorMainH"]/MAX_U32)*360
+            s = (d["HSVColorMainS"]/MAX_U32)*100
+            v = (d["HSVColorMainV"]/MAX_U32)*100
+        else:
+            cmd = p.get("command", "")
+            if cmd and cmd != "TellHeartbeat":
+                print(f"[CSP DEBUG] {p.get('type')} {cmd!r} detail={d}")
+            return
+        r, g, b = colorsys.hsv_to_rgb(h/360, s/100, v/100)
+        self._last_rgb = (int(r*255), int(g*255), int(b*255))
 
     def _parse(self, raw):
         if len(raw) < 10: return None
@@ -145,27 +275,27 @@ class CSPConnection:
         result = {"type": {0x01:"command",0x06:"success",0x15:"error"}.get(ptype,"?"),
                   "command": fields.get("command",""),
                   "serial": int(fields.get("serial",-1))}
-        ds = fields.get("detail","")
+        ds = fields.get("detail","").rstrip("\x1e\x00")
         if ds:
-            try: result["detail"] = json.loads(ds.split("\x0b",1)[0])
-            except: result["detail"] = {}
+            try: result["detail"] = json.loads(ds)
+            except Exception as e:
+                print(f"[PARSE ERR] {e}: ds={ds!r}")
+                result["detail"] = {}
         else: result["detail"] = {}
         return result
 
     def get_color_rgb(self):
-        resp = self._send_command("SyncColorCircleUIState")
-        if not resp or resp.get("type") != "success": return None
-        d = resp.get("detail",{})
-        if "HSVColorMainH" not in d: return None
-        h = (d["HSVColorMainH"]/MAX_U32)*360
-        s = (d["HSVColorMainS"]/MAX_U32)*100
-        v = (d["HSVColorMainV"]/MAX_U32)*100
-        r,g,b = colorsys.hsv_to_rgb(h/360,s/100,v/100)
-        return int(r*255),int(g*255),int(b*255)
+        # Empty detail makes the server reply with detail={} — it seems to
+        # only echo diffs against a client-declared state. Sending a plausible
+        # "stale" state forces a diff that includes every field.
+        stale = '{"IsManipulating":false,"HSVColorMainH":0,"HSVColorMainS":0,"HSVColorMainV":0,"CurrentColorIndex":0,"ColorSelectionModel":"HSV"}'
+        self._send_command("SyncColorCircleUIState", stale)
+        return self._last_rgb
 
     def set_color_hex(self, hx, idx=0):
         hx = hx.lstrip("#")
         r,g,b = int(hx[0:2],16),int(hx[2:4],16),int(hx[4:6],16)
+        self._last_rgb = (r, g, b)
         h,s,v = colorsys.rgb_to_hsv(r/255,g/255,b/255)
         detail = json.dumps({"ColorSpaceKind":"HSV","IsColorTransparent":False,
             "HSVColorH":int(h*MAX_U32),"HSVColorS":int(s*MAX_U32),
@@ -174,7 +304,11 @@ class CSPConnection:
 
     def heartbeat(self):
         if not self.connected: return
-        try: self._send_command("TellHeartbeat")
+        # IdleTimerResetRequested=true marks us as an "active" companion
+        # client; without it CSP's idle gate strips state fields from
+        # SyncColorCircleUIState responses (empty {}).
+        try: self._send_command("TellHeartbeat",
+                                '{"IdleTimerResetRequested":true}')
         except: pass
 
     def disconnect(self):
@@ -227,7 +361,7 @@ def rgb_hex(r,g,b): return f"#{round(r*255):02x}{round(g*255):02x}{round(b*255):
 
 import numpy as np
 
-def render_wheel_ppm(lightness, radius=WHEEL_RADIUS, max_c=MAX_CHROMA):
+def render_wheel_ppm(lightness, radius=WHEEL_RADIUS, max_c=MAX_CHROMA, gamut_warning=False):
     """Render a circular OKLCH palette as PPM pixel data extremely fast using NumPy."""
     size = radius * 2
     dy, dx = np.ogrid[-radius:radius, -radius:radius]
@@ -285,7 +419,13 @@ def render_wheel_ppm(lightness, radius=WHEEL_RADIUS, max_c=MAX_CHROMA):
     r8 = np.clip(np.round(r * 255), 0, 255).astype(np.uint8)
     g8 = np.clip(np.round(g * 255), 0, 255).astype(np.uint8)
     b8 = np.clip(np.round(b * 255), 0, 255).astype(np.uint8)
-    
+
+    if gamut_warning:
+        oog = ~in_gamut
+        r8 = np.where(oog, np.uint8(80), r8)
+        g8 = np.where(oog, np.uint8(80), g8)
+        b8 = np.where(oog, np.uint8(82), b8)
+
     pixels[mask, 0] = r8
     pixels[mask, 1] = g8
     pixels[mask, 2] = b8
@@ -322,6 +462,7 @@ class LumaPaletteApp:
         self.cur_hex = "#808080"
         self.cur_L = 0.65
         self.palette_shown = False
+        self.gamut_warning = False
         self.win_x = self.win_y = 0
         self.win_w = self.win_h = 0
 
@@ -331,9 +472,11 @@ class LumaPaletteApp:
         self.root.attributes("-topmost", True)
         self.root.configure(bg="#1e1e20")
 
+        self._show_hotkey_listener = None
         self._build_ui()
         self._no_activate()
         self._hotkeys()
+        self._apply_show_hotkey(SETTINGS.get("show_hotkey"))
         self.root.after(16, self._poll)
         self.root.after(3000, self._hb)
 
@@ -351,8 +494,9 @@ class LumaPaletteApp:
         """Render wheel in a background thread; result delivered via queue."""
         self._wheel_gen += 1
         gen = self._wheel_gen
+        gw = self.gamut_warning
         def worker():
-            ppm_data, color_map = render_wheel_ppm(L)
+            ppm_data, color_map = render_wheel_ppm(L, gamut_warning=gw)
             self.q.put(("wheel_ready", ppm_data, color_map, gen))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -386,10 +530,18 @@ class LumaPaletteApp:
 
         font = "Consolas" if platform.system() == "Windows" else "Menlo"
 
-        # Info label at top
-        self.info = Label(self.root, text="", font=(font, 9),
+        # Top bar: info label + gamut-warning toggle
+        top_bar = Frame(self.root, bg="#1e1e20")
+        top_bar.pack(fill="x", padx=6, pady=(4, 2))
+        self.info = Label(top_bar, text="", font=(font, 9),
                           fg="#bbb", bg="#1e1e20", anchor="w")
-        self.info.pack(fill="x", padx=6, pady=(4, 2))
+        self.info.pack(side="left", fill="x", expand=True)
+        self.gamut_btn = Button(top_bar, text="⚠", font=(font, 9),
+                                fg="#888", bg="#1e1e20",
+                                activeforeground="#fff", activebackground="#2a2a2d",
+                                bd=1, relief="flat", padx=4, pady=0,
+                                takefocus=0, command=self._toggle_gamut_warning)
+        self.gamut_btn.pack(side="right")
 
         # Container frame
         container = Frame(self.root, bg="#1e1e20")
@@ -445,6 +597,14 @@ class LumaPaletteApp:
                                     fill="#fff", width=2, tags="indicator")
         self.slider_cv.create_rectangle(0, y_pos-1, SLIDER_W, y_pos+1,
                                          outline="#fff", width=1, tags="indicator")
+
+    def _toggle_gamut_warning(self):
+        self.gamut_warning = not self.gamut_warning
+        if self.gamut_warning:
+            self.gamut_btn.configure(fg="#ffb347", relief="sunken", bg="#2a2a2d")
+        else:
+            self.gamut_btn.configure(fg="#888", relief="flat", bg="#1e1e20")
+        self._render_wheel_async(self.cur_L)
 
     def _update_info(self):
         r,g,b = [int(self.cur_hex[i:i+2],16) for i in (1,3,5)]
@@ -606,6 +766,8 @@ class LumaPaletteApp:
                 return
             if self.alt and self.armed:
                 # ALT+click → sample color and show palette
+                if SETTINGS["restrict_to_csp"] and not is_csp_foreground():
+                    return
                 self.armed = False
                 threading.Thread(target=self._sample,
                                  args=(x, y), daemon=True).start()
@@ -617,6 +779,41 @@ class LumaPaletteApp:
         kl.daemon = True; kl.start()
         ml = mouse.Listener(on_click=mc)
         ml.daemon = True; ml.start()
+
+    def _apply_show_hotkey(self, combo):
+        """(Re)register the global 'show palette' hotkey."""
+        from pynput import keyboard
+        if self._show_hotkey_listener is not None:
+            try: self._show_hotkey_listener.stop()
+            except Exception: pass
+            self._show_hotkey_listener = None
+        if not combo:
+            return
+        try:
+            hk = keyboard.GlobalHotKeys({combo: lambda: self.q.put(("show_hotkey",))})
+            hk.daemon = True
+            hk.start()
+            self._show_hotkey_listener = hk
+            print(f"[HOTKEY] Show-palette hotkey bound: {combo}")
+        except Exception as e:
+            print(f"[HOTKEY] Failed to bind {combo}: {e}")
+
+    def _sample_current_and_show(self):
+        """Fetch current CSP brush color and show palette at cursor."""
+        if SETTINGS["restrict_to_csp"] and not is_csp_foreground():
+            return
+        rgb = self.csp.get_color_rgb()
+        if rgb:
+            r, g, b = rgb
+            self.cur_hex = f"#{r:02x}{g:02x}{b:02x}"
+            L, _, _ = rgb2oklch(r / 255, g / 255, b / 255)
+            self.cur_L = L
+        try:
+            from pynput import mouse
+            x, y = mouse.Controller().position
+        except Exception:
+            x, y = 100, 100
+        self.q.put(("show", int(x), int(y)))
 
     def _sample(self, x, y):
         rgb = self.csp.get_color_rgb()
@@ -648,6 +845,11 @@ class LumaPaletteApp:
                     self._show(m[1], m[2])
                 elif m[0] == "hide":
                     self._hide()
+                elif m[0] == "show_hotkey":
+                    threading.Thread(target=self._sample_current_and_show,
+                                     daemon=True).start()
+                elif m[0] == "rehook_hotkey":
+                    self._apply_show_hotkey(SETTINGS.get("show_hotkey"))
                 elif m[0] == "wheel_ready":
                     _, ppm_data, _, gen = m
                     if gen >= self._wheel_gen:  # discard stale renders
@@ -726,10 +928,37 @@ if __name__ == "__main__":
         icon.stop()
         os._exit(0)
 
+    def on_toggle_restrict(icon, item):
+        SETTINGS["restrict_to_csp"] = not SETTINGS["restrict_to_csp"]
+
+    def make_hotkey_handler(combo):
+        def handler(icon, item):
+            SETTINGS["show_hotkey"] = combo
+            if APP_REF[0] is not None:
+                APP_REF[0].q.put(("rehook_hotkey",))
+        return handler
+
+    hotkey_submenu = pystray.Menu(*[
+        pystray.MenuItem(
+            label,
+            make_hotkey_handler(combo),
+            checked=lambda item, c=combo: SETTINGS["show_hotkey"] == c,
+            radio=True,
+        )
+        for label, combo in HOTKEY_PRESETS
+    ])
+
     icon_image = create_tray_icon_image()
     tray = pystray.Icon(
         "LumaPalette", icon_image, "Luma Palette - Waiting for QR",
         menu=pystray.Menu(
+            pystray.MenuItem(
+                "Only active when CSP is focused",
+                on_toggle_restrict,
+                checked=lambda item: SETTINGS["restrict_to_csp"],
+            ),
+            pystray.MenuItem("Show palette hotkey", hotkey_submenu),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Exit", on_exit),
         ),
     )
@@ -742,8 +971,29 @@ if __name__ == "__main__":
     tray_thread.start()
     time.sleep(0.5)  # let the icon register with the shell
 
+    # ── Try saved session first ──────────────────────────────────
+    csp = None
+    sess = load_session()
+    if sess and len(sys.argv) < 2:
+        print(f"[SESSION] Trying saved session {sess['host']}:{sess['port']}...")
+        trial = CSPConnection(sess["host"], sess["port"],
+                              sess["password"], sess["generation"],
+                              reconnect=True)
+        try:
+            trial.connect()
+            if trial.connected:
+                csp = trial
+                print("[SESSION] Reconnected without QR.")
+        except Exception as e:
+            print(f"[SESSION] Saved session failed: {e}")
+        if csp is None:
+            try: os.remove(_SESSION_PATH)
+            except Exception: pass
+
     # ── Obtain the QR URL ────────────────────────────────────────
-    if len(sys.argv) >= 2:
+    if csp is not None:
+        url = None
+    elif len(sys.argv) >= 2:
         url = sys.argv[1]
         print("[QR] Using URL from command line.")
     else:
@@ -762,18 +1012,18 @@ if __name__ == "__main__":
         tray.notify("QR code found! Connecting...", "Luma Palette")
 
     # ── Decode & connect ─────────────────────────────────────────
-    cfg = decode_qr_url(url)
-    print(f"[QR] IP: {cfg['ips']}, Port: {cfg['port']}, Gen: {cfg['generation']}")
-
-    csp = CSPConnection(cfg["ips"][0], cfg["port"],
-                        cfg["password"], cfg["generation"])
-    try:
-        csp.connect()
-    except Exception as e:
-        print(f"[!] Connection failed: {e}")
-        tray.notify(f"Connection failed: {e}", "Luma Palette")
-        time.sleep(3)
-        os._exit(1)
+    if csp is None:
+        cfg = decode_qr_url(url)
+        print(f"[QR] IP: {cfg['ips']}, Port: {cfg['port']}, Gen: {cfg['generation']}")
+        csp = CSPConnection(cfg["ips"][0], cfg["port"],
+                            cfg["password"], cfg["generation"])
+        try:
+            csp.connect()
+        except Exception as e:
+            print(f"[!] Connection failed: {e}")
+            tray.notify(f"Connection failed: {e}", "Luma Palette")
+            time.sleep(3)
+            os._exit(1)
 
     tray.title = "Luma Palette - Connected"
     tray.notify("Connected to CSP!", "Luma Palette")
@@ -785,4 +1035,5 @@ if __name__ == "__main__":
         print(f"[CSP] Current color: #{r:02x}{g:02x}{b:02x}")
 
     app = LumaPaletteApp(csp)
+    APP_REF[0] = app
     app.run()

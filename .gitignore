@@ -151,3 +151,16 @@ cython_debug/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Runtime artifacts
+session.json
+wire.log
+
+# Protocol-reverse-engineering captures (kept locally, not in repo)
+*.pcapng
+Streamcontent*.txt
+ReconnectStreamcontent.txt
+
+# Claude Code
+.claude/
+CLAUDE.md
