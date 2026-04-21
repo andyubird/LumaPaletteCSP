@@ -1,0 +1,90 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #1e1e20;
+  color: #bbb;
+  font-family: Consolas, Menlo, monospace;
+  font-size: 12px;
+  user-select: none;
+  overflow: hidden;
+  -webkit-user-select: none;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px 2px;
+  gap: 4px;
+}
+
+#info {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#gamut-btn {
+  background: #1e1e20;
+  color: #888;
+  border: 1px solid #1e1e20;
+  padding: 2px 6px;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+#gamut-btn.active {
+  color: #ffb347;
+  background: #2a2a2d;
+  border-color: #2a2a2d;
+}
+
+.container {
+  display: flex;
+  padding: 0 4px 4px;
+  gap: 12px;
+}
+
+#wheel, #slider {
+  display: block;
+  cursor: crosshair;
+}
+
+#hotkey-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+#hotkey-overlay[hidden] {
+  display: none;
+}
+
+.hotkey-box {
+  background: #26262a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 14px 18px;
+  min-width: 180px;
+  text-align: center;
+}
+
+.hotkey-title { color: #ddd; margin-bottom: 8px; }
+.hotkey-hint  { color: #666; margin-top: 6px; font-size: 11px; }
+
+.hotkey-capture {
+  background: #1a1a1c;
+  border: 1px solid #ffb347;
+  border-radius: 3px;
+  padding: 6px 10px;
+  color: #ffb347;
+  font-size: 14px;
+  outline: none;
+  cursor: text;
+}

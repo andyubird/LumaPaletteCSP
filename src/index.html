@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Luma Palette</title>
+    <script type="module" src="main.js" defer></script>
+  </head>
+  <body>
+    <div class="topbar">
+      <div id="info"></div>
+      <button id="gamut-btn" title="Toggle gamut warning">&#9888;</button>
+    </div>
+    <div class="container">
+      <canvas id="wheel"></canvas>
+      <canvas id="slider"></canvas>
+    </div>
+    <div id="hotkey-overlay" hidden>
+      <div class="hotkey-box">
+        <div class="hotkey-title">Press a key combo</div>
+        <div class="hotkey-capture" id="hotkey-capture" tabindex="0">…</div>
+        <div class="hotkey-hint">Esc to cancel</div>
+      </div>
+    </div>
+  </body>
+</html>

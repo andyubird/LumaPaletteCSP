@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-position",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-size",
+    "core:window:allow-is-visible",
+    "core:window:allow-cursor-position",
+    "core:window:allow-scale-factor",
+    "core:window:allow-available-monitors",
+    "core:window:allow-primary-monitor",
+    "core:window:allow-monitor-from-point",
+    "core:window:allow-inner-size",
+    "core:webview:allow-internal-toggle-devtools",
+    "core:event:default",
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all",
+    "notification:default",
+    "notification:allow-notify"
+  ]
+}
