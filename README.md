@@ -4,8 +4,15 @@ An OKLCH color picker popup that drives the Clip Studio Paint brush color over
 CSP's Companion Mode protocol. Rewritten from the original Python version as a
 Tauri 2 app — a single small binary, no Python runtime, native tray + hotkey.
 
-Original Python version and protocol notes:
-<https://github.com/andyubird/LumaPaletteCSP>
+The original Python single-file version is preserved in this repo
+(`luma_palette_csp.py` + `run.bat`) alongside the Tauri source and its
+[`PROTOCOL.md`](PROTOCOL.md) reference notes.
+
+## Install
+
+Grab the installer (`.msi` or `.exe`) from the
+[latest release](https://github.com/andyubird/LumaPaletteCSP/releases/latest).
+Requires Windows 10+ with the WebView2 runtime (ships with Windows 11).
 
 ## Features
 
@@ -48,6 +55,6 @@ Installer and portable exe land in
 
 - Companion-mode impersonation trick: Tourbox.
 - Reference protocol implementation: chocolatkey/clipremote.
-- Protocol notes: `PROTOCOL.md` (from the Python version).
+- Protocol notes: [`PROTOCOL.md`](PROTOCOL.md).
 
 MIT licensed.
