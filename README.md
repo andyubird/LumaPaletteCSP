@@ -68,14 +68,26 @@ also moves your settings and pairing.
 - **OKLCH (perceptual)**: A perceptual color space where the slider controls
   lightness and the wheel controls hue/chroma. This is a good default when you
   want smoother-looking lightness changes and more predictable color variation.
+  
+  <p align="center">
+    <img src="OKLCHdemo.png" width="300" alt="Show QR Code in CSP" />
+  </p>
+  
 - **HSV (CSP native)**: Matches the hue, saturation, and value style used by
   CSP's own color controls. This is useful when you want behavior closest to
   CSP's native picker.
+  
 - **HSL (classic)**: Uses hue, saturation, and lightness. This can be handy for
   quick lighter/darker variations while keeping a familiar color-wheel feel.
+  
 - **Photoshop Lab**: Uses a Photoshop-style Lab plane. The palette derives `L`
   from the current sampled color, the slider adjusts `L`, and the color area
   adjusts the `a`/`b` color axes.
+  
+  <p align="center">
+    <img src="LABdemo.png" width="300" alt="Show QR Code in CSP" />
+  </p>
+  
 - The gamut warning button applies to OKLCH and Photoshop Lab only. HSV and HSL
   already generate displayable sRGB colors, so there are no out-of-gamut areas
   to mark in those modes.
@@ -183,32 +195,37 @@ Companion Mode 直接同步回目前的筆刷顏色。
   <img src="ShowCompanionAppQRCode.png" width="300" alt="在 CSP 顯示 Companion Mode QR Code" />
 </p>
 
-### 日常使用
+### 使用方式
 
-- 在 CSP 畫布上按 `ALT + 左鍵`，CSP 會先吸取游標下方顏色，接著 Luma Palette 會在游標旁
-  開啟。只有單純的 `ALT + 左鍵` 會觸發，不會在 `Ctrl + Alt` 等其他組合鍵點擊時開啟。
-- 如果不想在 ALT 取色後開啟調色盤，可以在 Status & Settings 關閉
-  **ALT 取色後顯示調色盤**。
-- 想直接開啟調色盤、不重新吸色時，可以使用 Status & Settings 裡的 **立即顯示調色盤**。
-- 可以在 Status & Settings 啟用一組自訂鍵盤快捷鍵。程式沒有預設快捷鍵；如果偏好只用
-  滑鼠或筆，也可以保持關閉。
-- 點擊或拖曳色彩區域可調整色相與色彩強度。
-- 點擊或拖曳垂直滑桿可調整目前模式的明度或亮度軸。
-- 點擊調色盤外側即可關閉。
-- Luma Palette 會讀寫 CSP 目前選取的顏色槽，所以變更會套用到目前的主色或副色。
+- 在 CSP 畫布上按 `ALT + 左鍵`，CSP 會先吸取游標下方顏色，接著 Luma Palette 會在游標旁開啟。
+- 如果不想在 ALT 取色後開啟調色盤，可以在系統匣圖示右鍵選單選 Status & Settings 關閉**ALT 取色後顯示調色盤**。
+- 想直接開啟調色盤測試，可以使用 Status & Settings 裡的 **立即顯示調色盤**。
+- 可以在 Status & Settings 啟用一組自訂鍵盤快捷鍵。程式沒有預設快捷鍵；如果偏好只用滑鼠或筆，也可以保持關閉。
+- 在調色盤點擊或拖曳色彩區域可調整色相與色彩強度。
+- 在調色盤點擊或拖曳垂直滑桿可調整目前模式的明度或亮度軸。
+- 點擊調色盤外側即可關閉調色盤。
+- Luma Palette 會讀寫 CSP 目前選取的顏色(主、副色皆可)，選定顏色後會套用到目前的主色或副色。
 
 ### 色彩模式
 
 - **OKLCH（感知均勻）**：滑桿控制明度，色盤控制色相與彩度。適合當作預設模式，明度變化
   通常比較平順，調整顏色時也較容易維持一致的視覺感。
-- **HSV（CSP 原生）**：使用 CSP 常見的色相、飽和度、明度方式。適合想要最接近 CSP 內建
-  選色器行為的情況。
-- **HSL（傳統）**：使用色相、飽和度、亮度。適合快速做偏亮或偏暗的變化，同時保留熟悉的
-  色環操作感。
-- **Photoshop Lab**：使用類似 Photoshop 的 Lab 平面。開啟時會從目前取到的顏色計算 `L`，
-  垂直滑桿調整 `L`，色彩區域調整 `a` / `b` 色彩軸。
-- 色域警告按鈕只適用於 OKLCH 與 Photoshop Lab。HSV 與 HSL 本身產生的都是可顯示的 sRGB
-  顏色，因此沒有需要標示的超出色域區域。
+  
+  <p align="center">
+    <img src="OKLCHdemo.png" width="300" alt="Show QR Code in CSP" />
+  </p>
+  
+- **HSV（CSP 原生）**：使用 CSP 常見的色相、飽和度、明度方式。適合想要最接近 CSP 內建選色器行為的情況。
+  
+- **HSL（傳統）**：使用色相、飽和度、亮度。適合快速做偏亮或偏暗的變化，同時保留熟悉的色環操作感。
+  
+- **Photoshop Lab**：使用類似 Photoshop 的 Lab 色彩空間。開啟時會從目前取到的顏色計算 `L`，垂直滑桿調整 `L`，色彩區域調整 `a` / `b` 色彩軸。
+  
+  <p align="center">
+    <img src="LABdemo.png" width="300" alt="Show QR Code in CSP" />
+  </p>
+  
+- 色域警告按鈕只適用於 OKLCH 與 Photoshop Lab。HSV 與 HSL 本身產生的都是可顯示的 sRGB顏色，因此沒有需要標示的超出色域區域。
 
 ### Status & Settings 視窗
 
@@ -254,7 +271,7 @@ Luma Palette 關閉視窗後會留在 Windows 系統匣中執行。
 ### 特別致謝
 
 - 感謝 Tourbox 提供 Companion Mode 模擬手機端以取得 / 設定 CSP 畫筆顏色的靈感。
-- 感謝 chocolatkey/clipremote 分享 CSP Companion Mode 的參考實作。
+- 感謝 chocolatkey/clipremote 分享 CSP Companion Mode 解析的部分參考。
 - 協定筆記請參考 [`PROTOCOL.md`](PROTOCOL.md)。
 
 本專案採用 [MIT License](LICENSE) 授權。
