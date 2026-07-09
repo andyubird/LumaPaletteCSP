@@ -98,11 +98,19 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         settings.wheel_type == "hsl",
         None::<&str>,
     )?;
+    let wheel_lab = CheckMenuItem::with_id(
+        app,
+        "wheel-lab",
+        "Photoshop Lab",
+        true,
+        settings.wheel_type == "lab",
+        None::<&str>,
+    )?;
     let wheel_submenu = Submenu::with_items(
         app,
         "Color wheel",
         true,
-        &[&wheel_oklch, &wheel_hsv, &wheel_hsl],
+        &[&wheel_oklch, &wheel_hsv, &wheel_hsl, &wheel_lab],
     )?;
 
     // Keep handles so we can enforce radio-button behavior inside the menu
@@ -110,6 +118,7 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let wheel_oklch_h = wheel_oklch.clone();
     let wheel_hsv_h = wheel_hsv.clone();
     let wheel_hsl_h = wheel_hsl.clone();
+    let wheel_lab_h = wheel_lab.clone();
 
     // Palette offset submenu — where the popup sits relative to the cursor.
     let offset_presets: &[(&str, &str, &str)] = &[
@@ -206,19 +215,29 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = wheel_oklch_h.set_checked(true);
                     let _ = wheel_hsv_h.set_checked(false);
                     let _ = wheel_hsl_h.set_checked(false);
+                    let _ = wheel_lab_h.set_checked(false);
                     select_wheel(app, "oklch");
                 }
                 "wheel-hsv" => {
                     let _ = wheel_oklch_h.set_checked(false);
                     let _ = wheel_hsv_h.set_checked(true);
                     let _ = wheel_hsl_h.set_checked(false);
+                    let _ = wheel_lab_h.set_checked(false);
                     select_wheel(app, "hsv");
                 }
                 "wheel-hsl" => {
                     let _ = wheel_oklch_h.set_checked(false);
                     let _ = wheel_hsv_h.set_checked(false);
                     let _ = wheel_hsl_h.set_checked(true);
+                    let _ = wheel_lab_h.set_checked(false);
                     select_wheel(app, "hsl");
+                }
+                "wheel-lab" => {
+                    let _ = wheel_oklch_h.set_checked(false);
+                    let _ = wheel_hsv_h.set_checked(false);
+                    let _ = wheel_hsl_h.set_checked(false);
+                    let _ = wheel_lab_h.set_checked(true);
+                    select_wheel(app, "lab");
                 }
                 other if other.starts_with("offset-") => {
                     let Some((_, val)) = offset_map.iter().find(|(oid, _)| oid == other) else {

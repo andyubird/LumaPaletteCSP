@@ -1,18 +1,28 @@
 html, body {
   margin: 0;
   padding: 0;
+  min-width: 340px;
+  min-height: 310px;
   background: #1e1e20;
   color: #bbb;
   font-family: Consolas, Menlo, monospace;
   font-size: 12px;
+  box-sizing: border-box;
   user-select: none;
   overflow: hidden;
   -webkit-user-select: none;
 }
 
+body {
+  width: max-content;
+  height: max-content;
+}
+
 .topbar {
   display: flex;
   align-items: center;
+  box-sizing: border-box;
+  min-width: 340px;
   padding: 4px 6px 2px;
   gap: 4px;
 }
@@ -41,13 +51,21 @@ html, body {
   border-color: #2a2a2d;
 }
 
+#gamut-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 .container {
   display: flex;
+  box-sizing: border-box;
+  width: max-content;
   padding: 0 4px 4px;
   gap: 12px;
 }
 
 #wheel, #slider {
   display: block;
+  flex: 0 0 auto;
   cursor: crosshair;
 }

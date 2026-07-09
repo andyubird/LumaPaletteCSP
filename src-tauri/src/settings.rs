@@ -13,7 +13,10 @@ pub struct Settings {
     /// Kept in the struct for save-file compatibility but no longer toggleable.
     #[serde(default = "always_true")]
     pub require_csp_running: bool,
-    /// Color wheel model: "oklch" | "hsv" | "hsl".
+    /// UI language: "en" | "zh-TW".
+    #[serde(default = "default_language")]
+    pub language: String,
+    /// Color wheel model: "oklch" | "hsv" | "hsl" | "lab".
     pub wheel_type: String,
     /// Custom global shortcut accelerator string. Empty string disables it.
     #[serde(default = "default_hotkey")]
@@ -42,6 +45,9 @@ pub struct Settings {
 fn default_hotkey() -> String {
     String::new()
 }
+fn default_language() -> String {
+    "en".into()
+}
 fn default_palette_offset() -> String {
     "bottom-right".into()
 }
@@ -54,6 +60,7 @@ impl Default for Settings {
         Self {
             restrict_to_csp: false,
             require_csp_running: true,
+            language: default_language(),
             wheel_type: "oklch".into(),
             global_hotkey: default_hotkey(),
             show_after_alt_pick: true,

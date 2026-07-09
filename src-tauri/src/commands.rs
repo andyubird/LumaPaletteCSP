@@ -372,6 +372,14 @@ pub fn set_show_after_alt_pick(app: AppHandle, state: State<'_, AppState>, enabl
 }
 
 #[tauri::command]
+pub fn set_language(app: AppHandle, state: State<'_, AppState>, language: String) {
+    let language = if language == "zh-TW" { "zh-TW" } else { "en" }.to_string();
+    state.settings.update(|s| s.language = language.clone());
+    let _ = app.emit("language-changed", language);
+    let _ = app.emit("settings-changed", state.settings.get());
+}
+
+#[tauri::command]
 pub fn set_wheel_type(app: AppHandle, state: State<'_, AppState>, wheel_type: String) {
     state.settings.update(|s| s.wheel_type = wheel_type.clone());
     let _ = app.emit("wheel-type-changed", wheel_type);

@@ -252,6 +252,7 @@ pub fn run() {
             commands::set_wheel_type,
             commands::set_palette_offset,
             commands::set_show_after_alt_pick,
+            commands::set_language,
             commands::set_global_hotkey,
             commands::show_palette_at_cursor,
             commands::start_qr_scan,

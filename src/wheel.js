@@ -7,12 +7,16 @@ import {
   hexToRgb,
 } from "./oklch.js";
 import { hsv2rgb, rgb2hsv, hsl2rgb, rgb2hsl } from "./color-models.js";
+import { lab2rgb, lab2rgbRaw, rgb2lab } from "./lab.js";
 
 export const WHEEL_RADIUS = 140;
 
 // -------- common helpers --------
 
 const BG = [30, 30, 32];
+const LAB_AB_RANGE = 256;
+const LAB_AB_MIN = -128;
+const LAB_AB_MAX = 128;
 
 // Screen-angle → hue mapping. Chosen so that blue sits at the bottom of the
 // wheel, matching the OKLCH formula (and loosely CSP's own color-circle
@@ -88,6 +92,22 @@ function drawOverlay(ctx, currentHex, marker) {
   ctx.stroke();
 }
 
+function labAtPoint(x, y) {
+  const size = WHEEL_RADIUS * 2;
+  const a = (x / (size - 1)) * LAB_AB_RANGE + LAB_AB_MIN;
+  const b = LAB_AB_MAX - (y / (size - 1)) * LAB_AB_RANGE;
+  return [a, b];
+}
+
+function pointForLab(a, b) {
+  const size = WHEEL_RADIUS * 2;
+  const clamp = (v) => Math.max(0, Math.min(size - 1, v));
+  return {
+    x: clamp(((a - LAB_AB_MIN) / LAB_AB_RANGE) * (size - 1)),
+    y: clamp(((LAB_AB_MAX - b) / LAB_AB_RANGE) * (size - 1)),
+  };
+}
+
 // -------- OKLCH wheel --------
 
 function renderOklchImage(L, gamutWarning) {
@@ -139,7 +159,10 @@ class OklchWheel {
     this.cachedImage = renderOklchImage(L, this.gamutWarning);
     this._draw();
   }
-  setGamutWarning(on) { this.gamutWarning = on; this.render(this.currentL); }
+  setGamutWarning(on, rerender = true) {
+    this.gamutWarning = on;
+    if (rerender) this.render(this.currentL);
+  }
   setCurrentColor(hex, markerAt) {
     this.currentHex = hex;
     this.markerAt = markerAt || null;
@@ -304,12 +327,91 @@ class HslWheel {
   rgbToAxis(r, g, b) { return rgb2hsl(r, g, b)[2]; }
 }
 
+// -------- Photoshop-style Lab wheel (x=a, y=b, slider/current color=L) --------
+
+function renderLabImage(L, gamutWarning) {
+  const size = WHEEL_RADIUS * 2;
+  const img = new ImageData(size, size);
+  const d = img.data;
+  const labL = L * 100;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      const [a, b] = labAtPoint(x, y);
+      const raw = lab2rgbRaw(labL, a, b);
+      const fits = raw.every((v) => v >= -0.002 && v <= 1.002);
+      if (!fits && gamutWarning) {
+        d[i] = 78; d[i + 1] = 78; d[i + 2] = 82; d[i + 3] = 255;
+        continue;
+      }
+      const [r, g, bl] = fits ? raw : lab2rgb(labL, a, b);
+      putPx(d, i, r, g, bl);
+    }
+  }
+  return img;
+}
+
+class LabWheel {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    setupCanvas(canvas);
+    this.cachedImage = null;
+    this.currentL = 0.5;
+    this.gamutWarning = false;
+    this.currentHex = "#808080";
+    this.markerAt = null;
+  }
+  render(L) {
+    this.currentL = L;
+    this.cachedImage = renderLabImage(L, this.gamutWarning);
+    this._draw();
+  }
+  setGamutWarning(on, rerender = true) {
+    this.gamutWarning = on;
+    if (rerender) this.render(this.currentL);
+  }
+  setCurrentColor(hex, markerAt) {
+    this.currentHex = hex;
+    this.markerAt = markerAt || null;
+    this._draw();
+  }
+  _draw() {
+    if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
+    let marker;
+    if (this.markerAt) {
+      marker = { x: this.markerAt[0], y: this.markerAt[1] };
+    } else {
+      const [r, g, b] = hexToRgb(this.currentHex);
+      const [, a, labB] = rgb2lab(r, g, b);
+      marker = pointForLab(a, labB);
+    }
+    drawOverlay(this.ctx, this.currentHex, marker);
+  }
+  pickAt(x, y) {
+    const size = WHEEL_RADIUS * 2;
+    if (x < 0 || y < 0 || x >= size || y >= size) return null;
+    const [a, b] = labAtPoint(x, y);
+    const [r, g, bl] = lab2rgb(this.currentL * 100, a, b);
+    return rgbToHex(r, g, bl);
+  }
+  clampPoint(x, y) {
+    const max = WHEEL_RADIUS * 2 - 1;
+    return [
+      Math.max(0, Math.min(max, x)),
+      Math.max(0, Math.min(max, y)),
+    ];
+  }
+  rgbToAxis(r, g, b) { return Math.max(0, Math.min(1, rgb2lab(r, g, b)[0] / 100)); }
+}
+
 // -------- factory --------
 
 export function createWheel(canvas, type) {
   switch (type) {
     case "hsv": return new HsvWheel(canvas);
     case "hsl": return new HslWheel(canvas);
+    case "lab": return new LabWheel(canvas);
     case "oklch":
     default: return new OklchWheel(canvas);
   }
