@@ -9,7 +9,7 @@ pub struct SessionData {
     pub generation: String,
 }
 
-fn session_path() -> PathBuf {
+pub fn session_path() -> PathBuf {
     // Next to the executable, matching the Python behavior.
     std::env::current_exe()
         .ok()

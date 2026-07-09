@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -14,10 +15,19 @@ pub struct Settings {
     pub require_csp_running: bool,
     /// Color wheel model: "oklch" | "hsv" | "hsl".
     pub wheel_type: String,
-    /// Global hotkey accelerator string (e.g. "Alt+P", "F7", "Ctrl+Shift+P").
-    /// Empty string disables the hotkey.
+    /// Custom global shortcut accelerator string. Empty string disables it.
     #[serde(default = "default_hotkey")]
     pub global_hotkey: String,
+    /// Whether ALT+left-click should summon Luma after CSP's own eyedropper
+    /// commits the sampled brush color.
+    #[serde(default = "always_true")]
+    pub show_after_alt_pick: bool,
+    /// Whether the first-run Status & Settings guide has been shown.
+    #[serde(default)]
+    pub has_seen_welcome: bool,
+    /// Whether to show a once-per-launch tray notification after the first run.
+    #[serde(default = "always_true")]
+    pub notify_on_startup: bool,
     /// Where the palette appears relative to the summon point (cursor / hotkey
     /// invocation point). One of:
     /// "bottom-right" (default, right-handed),
@@ -29,9 +39,15 @@ pub struct Settings {
     pub palette_offset: String,
 }
 
-fn default_hotkey() -> String { "Alt+P".into() }
-fn default_palette_offset() -> String { "bottom-right".into() }
-fn always_true() -> bool { true }
+fn default_hotkey() -> String {
+    String::new()
+}
+fn default_palette_offset() -> String {
+    "bottom-right".into()
+}
+fn always_true() -> bool {
+    true
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -40,14 +56,35 @@ impl Default for Settings {
             require_csp_running: true,
             wheel_type: "oklch".into(),
             global_hotkey: default_hotkey(),
+            show_after_alt_pick: true,
+            has_seen_welcome: false,
+            notify_on_startup: true,
             palette_offset: default_palette_offset(),
         }
     }
 }
 
-fn settings_path() -> Option<PathBuf> {
+pub fn exe_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("settings.json"))
+    Some(exe.parent()?.to_path_buf())
+}
+
+pub fn settings_path() -> Option<PathBuf> {
+    Some(exe_dir()?.join("settings.json"))
+}
+
+pub fn exe_dir_is_writable() -> bool {
+    let Some(dir) = exe_dir() else {
+        return false;
+    };
+    let probe = dir.join(format!(".luma-write-test-{}", std::process::id()));
+    match OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 pub fn load() -> Settings {
@@ -61,7 +98,9 @@ pub fn load() -> Settings {
 }
 
 pub fn save(s: &Settings) {
-    let Some(path) = settings_path() else { return; };
+    let Some(path) = settings_path() else {
+        return;
+    };
     if let Ok(json) = serde_json::to_string_pretty(s) {
         let _ = fs::write(path, json);
     }

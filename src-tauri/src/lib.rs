@@ -18,49 +18,37 @@ use state::AppState;
 use status::Phase;
 
 fn cli_qr_url() -> Option<String> {
-    std::env::args().nth(1).filter(|a| a.starts_with("https://"))
+    std::env::args()
+        .nth(1)
+        .filter(|a| a.starts_with("https://"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // Second launch: just nudge existing instance into scan mode.
-            let state: tauri::State<'_, AppState> = app.state();
-            commands::start_qr_scan(app.clone(), state);
+            // Second launch: surface the running app instead of staying silent.
+            commands::show_status_settings(app);
+            let app = app.clone();
+            thread::spawn(move || {
+                let state: tauri::State<'_, AppState> = app.state();
+                if !commands::try_reconnect_session(app.clone(), state) {
+                    let state: tauri::State<'_, AppState> = app.state();
+                    commands::start_qr_scan(app.clone(), state);
+                }
+            });
         }))
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    use tauri_plugin_global_shortcut::ShortcutState;
-                    if event.state() == ShortcutState::Pressed {
-                        let (x, y) = get_cursor_pos();
-                        commands::sample_and_show(app, x, y);
-                    }
-                })
-                .build(),
-        )
         .plugin(tauri_plugin_notification::init())
         .manage(AppState::new())
         .setup(|app| {
             // Apply persisted settings to in-memory flags.
-            {
+            let startup_settings = {
                 let state: tauri::State<'_, AppState> = app.state();
                 let s = state.settings.get();
-                commands::RESTRICT_TO_CSP.store(
-                    s.restrict_to_csp,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                if !s.global_hotkey.is_empty() {
-                    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                    if let Err(e) = app.global_shortcut().register(s.global_hotkey.as_str()) {
-                        eprintln!(
-                            "[HOTKEY] failed to register '{}': {e}",
-                            s.global_hotkey
-                        );
-                    }
-                }
-            }
+                commands::RESTRICT_TO_CSP
+                    .store(s.restrict_to_csp, std::sync::atomic::Ordering::Relaxed);
+                s
+            };
 
             // System tray.
             if let Err(e) = tray::install(&app.handle()) {
@@ -71,8 +59,21 @@ pub fn run() {
             // ALT+click hook — posts into main thread via an event.
             let hook_handle = app.handle().clone();
             input_hook::install_alt_click(move |x, y| {
-                commands::sample_and_show(&hook_handle, x, y);
+                commands::sample_after_alt_pick(&hook_handle, x, y);
             });
+
+            let shortcut_settings_handle = app.handle().clone();
+            let shortcut_action_handle = app.handle().clone();
+            input_hook::install_shortcut(
+                move || {
+                    let state: tauri::State<'_, AppState> = shortcut_settings_handle.state();
+                    state.settings.get().global_hotkey
+                },
+                move || {
+                    let (x, y) = get_cursor_pos();
+                    commands::sample_and_show(&shortcut_action_handle, x, y);
+                },
+            );
 
             // Wire tray menu events to app-level actions.
             let toggle_handle = app.handle().clone();
@@ -92,7 +93,7 @@ pub fn run() {
             let rescan_handle = app.handle().clone();
             app.listen("tray-rescan-qr", move |_| {
                 let state: tauri::State<'_, AppState> = rescan_handle.state();
-                commands::start_qr_scan(rescan_handle.clone(), state);
+                commands::disconnect_and_scan_qr(rescan_handle.clone(), state);
             });
 
             // CSP process watcher — pauses/resumes QR scanning as the user
@@ -102,8 +103,13 @@ pub fn run() {
                 let _ = proc_handle.emit("csp-process-status", running);
                 let state: tauri::State<'_, AppState> = proc_handle.state();
                 if running {
-                    let connected = state.csp.lock().unwrap().as_ref()
-                        .map(|c| c.connected).unwrap_or(false);
+                    let connected = state
+                        .csp
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|c| c.connected)
+                        .unwrap_or(false);
                     if !connected {
                         // CSP just appeared. Give it a few seconds to finish
                         // booting its Companion server, then try the saved
@@ -206,21 +212,48 @@ pub fn run() {
                 });
             }
 
+            // Settings window closes to tray; the palette window keeps its own
+            // click-outside-to-hide behavior above.
+            if let Some(win) = app.get_webview_window("settings") {
+                let win_clone = win.clone();
+                win.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = win_clone.hide();
+                    }
+                });
+            }
+
+            if !startup_settings.has_seen_welcome {
+                commands::show_status_settings(&app.handle());
+                let state: tauri::State<'_, AppState> = app.state();
+                state.settings.update(|s| s.has_seen_welcome = true);
+            } else if startup_settings.notify_on_startup {
+                status::notify_startup(&app.handle(), &startup_settings.global_hotkey);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_app_snapshot,
+            commands::open_status_settings,
+            commands::close_status_settings,
+            commands::mark_welcome_seen,
             commands::try_reconnect_session,
             commands::connect_via_qr_url,
             commands::get_csp_color,
             commands::set_csp_color,
             commands::connection_status,
             commands::disconnect_csp,
+            commands::disconnect_and_scan_qr,
             commands::set_restrict_to_csp,
             commands::get_restrict_to_csp,
             commands::get_settings,
             commands::set_wheel_type,
             commands::set_palette_offset,
+            commands::set_show_after_alt_pick,
             commands::set_global_hotkey,
+            commands::show_palette_at_cursor,
             commands::start_qr_scan,
             commands::stop_qr_scan,
         ])

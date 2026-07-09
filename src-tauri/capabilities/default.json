@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": ["main", "settings"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
@@ -20,10 +20,6 @@
     "core:window:allow-inner-size",
     "core:webview:allow-internal-toggle-devtools",
     "core:event:default",
-    "global-shortcut:default",
-    "global-shortcut:allow-register",
-    "global-shortcut:allow-unregister",
-    "global-shortcut:allow-unregister-all",
     "notification:default",
     "notification:allow-notify"
   ]

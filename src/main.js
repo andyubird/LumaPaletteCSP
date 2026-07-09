@@ -20,9 +20,6 @@ let lastCspSend = 0;
 let paletteOffset = "bottom-right";
 let currentSlot = 0; // 0 = main, 1 = sub
 
-const hotkeyOverlay = document.getElementById("hotkey-overlay");
-const hotkeyCapture = document.getElementById("hotkey-capture");
-
 function setColor(hex, { sync = true, markerAt = null } = {}) {
   currentHex = hex;
   wheel.setCurrentColor(hex, markerAt);
@@ -125,23 +122,15 @@ async function bootstrap() {
 
   listen("show-palette", (evt) => {
     const { x, y, r, g, b, slot } = evt.payload;
-    // Normal summon — make sure any stale capture overlay is cleared.
-    closeHotkeyCapture();
     showPaletteAt(x, y, r, g, b, slot);
   });
-
-  listen("request-custom-hotkey", () => {
-    openHotkeyCapture();
-  });
-
-  // If the window loses focus (Tauri hides it on blur) tear down the capture
-  // overlay too, otherwise it would still be up on the next summon.
-  window.addEventListener("blur", closeHotkeyCapture);
 
   listen("qr-scan-status", (evt) => {
     const { scanning, message } = evt.payload;
     if (scanning) {
       info.textContent = " Scanning for CSP QR code…";
+    } else if (message === "already connected") {
+      info.textContent = " Connected.";
     } else if (message) {
       info.textContent = ` QR: ${message}`;
     }
@@ -252,63 +241,6 @@ gamutBtn.addEventListener("click", () => {
   gamutBtn.classList.toggle("active", on);
   wheel.setGamutWarning(on);
 });
-
-// Custom hotkey capture overlay. Triggered by the tray's "Custom…" item.
-function accelFromEvent(e) {
-  const parts = [];
-  if (e.ctrlKey) parts.push("Ctrl");
-  if (e.shiftKey) parts.push("Shift");
-  if (e.altKey) parts.push("Alt");
-  if (e.metaKey) parts.push("Super");
-  let key = e.key;
-  if (["Control", "Shift", "Alt", "Meta"].includes(key)) return null;
-  if (key === " ") key = "Space";
-  else if (/^F\d+$/.test(key)) { /* F1..F24 */ }
-  else if (key.length === 1) key = key.toUpperCase();
-  else key = key.charAt(0).toUpperCase() + key.slice(1);
-  parts.push(key);
-  return parts.join("+");
-}
-
-function closeHotkeyCapture() {
-  hotkeyOverlay.hidden = true;
-  hotkeyCapture.textContent = "…";
-  document.removeEventListener("keydown", onHotkeyCaptureKey, true);
-}
-
-function onHotkeyCaptureKey(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === "Escape") { closeHotkeyCapture(); return; }
-  const accel = accelFromEvent(e);
-  if (!accel) return;
-  hotkeyCapture.textContent = accel;
-  invoke("set_global_hotkey", { hotkey: accel })
-    .then(() => { setTimeout(closeHotkeyCapture, 350); })
-    .catch((err) => {
-      hotkeyCapture.textContent = `Rejected: ${err}`;
-      setTimeout(closeHotkeyCapture, 1200);
-    });
-}
-
-function openHotkeyCapture() {
-  hotkeyOverlay.hidden = false;
-  hotkeyCapture.focus();
-  document.addEventListener("keydown", onHotkeyCaptureKey, true);
-}
-
-hotkeyOverlay.addEventListener("mousedown", (e) => {
-  if (e.target === hotkeyOverlay) closeHotkeyCapture();
-});
-
-// Always-on ESC escape hatch — works even if the capture listener never got
-// wired up (e.g. overlay was stuck visible from a CSS/attribute mismatch).
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !hotkeyOverlay.hidden) {
-    e.preventDefault();
-    closeHotkeyCapture();
-  }
-}, true);
 
 bootstrap();
 window.__luma = { wheel, slider, setColor, setLightness, invoke };

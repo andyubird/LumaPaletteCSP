@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="settings.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Luma Palette Settings</title>
+    <script type="module" src="settings.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Luma Palette</h1>
+        <p id="status-label">Starting...</p>
+      </div>
+      <span id="connection-pill">Checking</span>
+    </header>
+
+    <main>
+      <section class="panel" id="portable-warning" hidden>
+        <h2>Portable storage needs attention</h2>
+        <p>
+          Luma Palette saves <code>settings.json</code> and
+          <code>session.json</code> beside the app. Move the app to a writable
+          folder if settings or pairing do not persist.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Setup</h2>
+        <ol>
+          <li>Open Clip Studio Paint.</li>
+          <li>Choose <code>File &gt; Connect to Smartphone</code>.</li>
+          <li>Keep the QR code visible while Luma Palette scans.</li>
+        </ol>
+        <div class="actions">
+          <button id="scan-btn">Disconnect and scan QR</button>
+          <button id="show-palette-btn">Show palette now</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Color picking</h2>
+        <label class="check-row">
+          <input type="checkbox" id="alt-pick-toggle" />
+          <span>
+            <strong>Show palette after ALT color pick</strong>
+            <small>After CSP samples the canvas color, Luma Palette opens at the cursor.</small>
+          </span>
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2>Palette settings</h2>
+        <label class="check-row">
+          <input type="checkbox" id="restrict-toggle" />
+          <span>
+            <strong>Only respond when CSP is focused</strong>
+            <small>Ignore palette shortcuts and ALT color pick while another app is active.</small>
+          </span>
+        </label>
+        <div class="field-row">
+          <label for="wheel-type">Color wheel</label>
+          <select id="wheel-type">
+            <option value="oklch">OKLCH (perceptual)</option>
+            <option value="hsv">HSV (CSP native)</option>
+            <option value="hsl">HSL (classic)</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="palette-offset">Palette position</label>
+          <select id="palette-offset">
+            <option value="bottom-right">Bottom-right of cursor</option>
+            <option value="bottom-left">Bottom-left of cursor (left-handed)</option>
+            <option value="top-right">Top-right of cursor</option>
+            <option value="top-left">Top-left of cursor</option>
+            <option value="center">Centered on cursor</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Keyboard shortcut</h2>
+        <label class="check-row">
+          <input type="checkbox" id="shortcut-enabled" />
+          <span>
+            <strong>Enable keyboard shortcut</strong>
+            <small>Use one custom shortcut to show the palette at the cursor.</small>
+          </span>
+        </label>
+        <div class="shortcut-row">
+          <span id="shortcut-value">Off</span>
+          <button id="record-shortcut-btn">Record shortcut</button>
+          <button id="clear-shortcut-btn">Clear</button>
+        </div>
+        <div id="capture-box" hidden>
+          <strong id="capture-value">Press keys...</strong>
+          <span>Esc cancels</span>
+        </div>
+        <p class="message" id="shortcut-message"></p>
+      </section>
+
+      <section class="panel compact">
+        <h2>Storage</h2>
+        <dl>
+          <dt>Settings</dt>
+          <dd id="settings-path">...</dd>
+          <dt>Pairing</dt>
+          <dd id="session-path">...</dd>
+        </dl>
+      </section>
+    </main>
+
+    <footer>
+      <button id="close-btn">Close to tray</button>
+    </footer>
+  </body>
+</html>

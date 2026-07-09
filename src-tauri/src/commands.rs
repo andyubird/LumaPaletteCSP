@@ -4,11 +4,12 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::csp::crypto::decode_qr_url;
-use crate::csp::session::{clear_session, load_session};
+use crate::csp::session::{clear_session, load_session, session_path};
 use crate::csp::CSPConnection;
 use crate::csp_process;
 use crate::input_hook;
 use crate::qr;
+use crate::settings;
 use crate::state::AppState;
 use crate::status::{self, Phase};
 
@@ -24,6 +25,23 @@ pub struct ConnectionStatus {
     pub message: Option<String>,
 }
 
+#[derive(Serialize, Clone)]
+pub struct PortableInfo {
+    pub exe_dir: Option<String>,
+    pub settings_path: Option<String>,
+    pub session_path: String,
+    pub exe_dir_writable: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct AppSnapshot {
+    pub settings: crate::settings::Settings,
+    pub phase: crate::status::PhasePayload,
+    pub portable: PortableInfo,
+    pub csp_running: bool,
+    pub connected: bool,
+}
+
 fn emit_status(app: &AppHandle, status: &str, message: Option<String>) {
     let _ = app.emit(
         "connection-status",
@@ -32,6 +50,57 @@ fn emit_status(app: &AppHandle, status: &str, message: Option<String>) {
             message,
         },
     );
+}
+
+fn portable_info() -> PortableInfo {
+    PortableInfo {
+        exe_dir: settings::exe_dir().map(|p| p.display().to_string()),
+        settings_path: settings::settings_path().map(|p| p.display().to_string()),
+        session_path: session_path().display().to_string(),
+        exe_dir_writable: settings::exe_dir_is_writable(),
+    }
+}
+
+#[tauri::command]
+pub fn get_app_snapshot(state: State<'_, AppState>) -> AppSnapshot {
+    let connected = state
+        .csp
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.connected)
+        .unwrap_or(false);
+    AppSnapshot {
+        settings: state.settings.get(),
+        phase: status::current(),
+        portable: portable_info(),
+        csp_running: csp_process::is_running(),
+        connected,
+    }
+}
+
+pub fn show_status_settings(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+#[tauri::command]
+pub fn open_status_settings(app: AppHandle) {
+    show_status_settings(&app);
+}
+
+#[tauri::command]
+pub fn close_status_settings(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+pub fn mark_welcome_seen(state: State<'_, AppState>) {
+    state.settings.update(|s| s.has_seen_welcome = true);
 }
 
 #[derive(Serialize, Clone)]
@@ -54,12 +123,28 @@ pub struct ColorUpdate {
 fn emit_color(app: &AppHandle, rgb: (u8, u8, u8), slot: u8) {
     let _ = app.emit(
         "color-update",
-        ColorUpdate { r: rgb.0, g: rgb.1, b: rgb.2, slot },
+        ColorUpdate {
+            r: rgb.0,
+            g: rgb.1,
+            b: rgb.2,
+            slot,
+        },
     );
 }
 
 #[tauri::command]
 pub fn try_reconnect_session(app: AppHandle, state: State<'_, AppState>) -> bool {
+    let already_connected = state
+        .csp
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.connected)
+        .unwrap_or(false);
+    if already_connected {
+        return true;
+    }
+
     if !csp_process::is_running() {
         // Skip silently — the csp_process watcher will invoke us again once
         // CSP appears, and we don't want to ECONNREFUSED-log on every launch
@@ -73,17 +158,14 @@ pub fn try_reconnect_session(app: AppHandle, state: State<'_, AppState>) -> bool
         "[SESSION] Trying saved session {}:{}...",
         sess.host, sess.port
     );
-    let mut conn = CSPConnection::new(
-        sess.host,
-        sess.port,
-        sess.password,
-        sess.generation,
-        true,
-    );
+    let mut conn = CSPConnection::new(sess.host, sess.port, sess.password, sess.generation, true);
     status::set(&app, Phase::Reconnecting);
     match conn.connect() {
         Ok(()) if conn.connected => {
             let host = conn.host.clone();
+            if let Some(h) = state.qr_scan.lock().unwrap().take() {
+                h.stop();
+            }
             let mut slot = state.csp.lock().unwrap();
             *slot = Some(conn);
             emit_status(&app, "connected", Some("reconnected".into()));
@@ -118,13 +200,7 @@ pub fn connect_via_qr_url(
         "[QR] IP: {:?}, Port: {}, Gen: {}",
         cfg.ips, cfg.port, cfg.generation
     );
-    let mut conn = CSPConnection::new(
-        host,
-        cfg.port,
-        cfg.password,
-        cfg.generation,
-        false,
-    );
+    let mut conn = CSPConnection::new(host, cfg.port, cfg.password, cfg.generation, false);
     conn.connect()?;
     if !conn.connected {
         return Err("connection lost after auth".into());
@@ -144,7 +220,11 @@ pub fn get_csp_color(app: AppHandle, state: State<'_, AppState>) -> Option<RgbTu
     let rgb = conn.get_color_rgb()?;
     let idx = conn.color_index();
     emit_color(&app, rgb, idx);
-    Some(RgbTuple { r: rgb.0, g: rgb.1, b: rgb.2 })
+    Some(RgbTuple {
+        r: rgb.0,
+        g: rgb.1,
+        b: rgb.2,
+    })
 }
 
 #[tauri::command]
@@ -174,6 +254,33 @@ pub fn disconnect_csp(app: AppHandle, state: State<'_, AppState>) {
     status::set(&app, Phase::Disconnected("user".into()));
 }
 
+#[tauri::command]
+pub fn disconnect_and_scan_qr(app: AppHandle, state: State<'_, AppState>) {
+    clear_session();
+
+    if let Some(h) = state.qr_scan.lock().unwrap().take() {
+        h.stop();
+    }
+
+    {
+        let mut slot = state.csp.lock().unwrap();
+        if let Some(mut conn) = slot.take() {
+            conn.disconnect();
+        }
+    }
+
+    emit_status(&app, "disconnected", Some("saved pairing cleared".into()));
+
+    if !csp_process::is_running() {
+        emit_scan_status(&app, false, Some("waiting for CSP process"));
+        status::set(&app, Phase::WaitingForCsp);
+        println!("[QR] pairing cleared; waiting for CSP process");
+        return;
+    }
+
+    start_qr_scan(app, state);
+}
+
 #[derive(Serialize, Clone)]
 pub struct ShowPalettePayload {
     pub x: i32,
@@ -197,6 +304,10 @@ pub fn sample_and_show(app: &AppHandle, x: i32, y: i32) {
         return;
     }
 
+    sample_and_show_unrestricted(app, x, y);
+}
+
+fn sample_and_show_unrestricted(app: &AppHandle, x: i32, y: i32) {
     let app_bg = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(180));
@@ -222,10 +333,26 @@ pub fn sample_and_show(app: &AppHandle, x: i32, y: i32) {
     });
 }
 
+pub fn sample_after_alt_pick(app: &AppHandle, x: i32, y: i32) {
+    let state: State<'_, AppState> = app.state();
+    if !state.settings.get().show_after_alt_pick {
+        return;
+    }
+    sample_and_show(app, x, y);
+}
+
 #[tauri::command]
-pub fn set_restrict_to_csp(state: State<'_, AppState>, enabled: bool) {
+pub fn show_palette_at_cursor(app: AppHandle) {
+    let (x, y) = get_cursor_pos();
+    sample_and_show_unrestricted(&app, x, y);
+}
+
+#[tauri::command]
+pub fn set_restrict_to_csp(app: AppHandle, state: State<'_, AppState>, enabled: bool) {
     RESTRICT_TO_CSP.store(enabled, Ordering::Relaxed);
     state.settings.update(|s| s.restrict_to_csp = enabled);
+    let _ = app.emit("restrict-to-csp-changed", enabled);
+    let _ = app.emit("settings-changed", state.settings.get());
 }
 
 #[tauri::command]
@@ -239,19 +366,23 @@ pub fn get_settings(state: State<'_, AppState>) -> crate::settings::Settings {
 }
 
 #[tauri::command]
-pub fn set_wheel_type(app: AppHandle, state: State<'_, AppState>, wheel_type: String) {
-    state.settings.update(|s| s.wheel_type = wheel_type.clone());
-    let _ = app.emit("wheel-type-changed", wheel_type);
+pub fn set_show_after_alt_pick(app: AppHandle, state: State<'_, AppState>, enabled: bool) {
+    state.settings.update(|s| s.show_after_alt_pick = enabled);
+    let _ = app.emit("settings-changed", state.settings.get());
 }
 
 #[tauri::command]
-pub fn set_palette_offset(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    offset: String,
-) {
+pub fn set_wheel_type(app: AppHandle, state: State<'_, AppState>, wheel_type: String) {
+    state.settings.update(|s| s.wheel_type = wheel_type.clone());
+    let _ = app.emit("wheel-type-changed", wheel_type);
+    let _ = app.emit("settings-changed", state.settings.get());
+}
+
+#[tauri::command]
+pub fn set_palette_offset(app: AppHandle, state: State<'_, AppState>, offset: String) {
     state.settings.update(|s| s.palette_offset = offset.clone());
     let _ = app.emit("palette-offset-changed", offset);
+    let _ = app.emit("settings-changed", state.settings.get());
 }
 
 #[tauri::command]
@@ -260,23 +391,16 @@ pub fn set_global_hotkey(
     state: State<'_, AppState>,
     hotkey: String,
 ) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-
-    let gs = app.global_shortcut();
-
-    // Unregister the previous binding, if any.
+    input_hook::validate_shortcut(&hotkey)?;
     let prev = state.settings.get().global_hotkey;
-    if !prev.is_empty() {
-        let _ = gs.unregister(prev.as_str());
-    }
-
-    if !hotkey.is_empty() {
-        gs.register(hotkey.as_str())
-            .map_err(|e| format!("register '{hotkey}' failed: {e}"))?;
+    if prev == hotkey {
+        let _ = app.emit("global-hotkey-changed", hotkey);
+        return Ok(());
     }
 
     state.settings.update(|s| s.global_hotkey = hotkey.clone());
     let _ = app.emit("global-hotkey-changed", hotkey);
+    let _ = app.emit("settings-changed", state.settings.get());
     Ok(())
 }
 
@@ -303,16 +427,13 @@ fn connect_with_url(app: &AppHandle, url: &str) {
                 "[QR] scanned — IP: {:?}, Port: {}, Gen: {}",
                 cfg.ips, cfg.port, cfg.generation
             );
-            let mut conn = CSPConnection::new(
-                host,
-                cfg.port,
-                cfg.password,
-                cfg.generation,
-                false,
-            );
+            let mut conn = CSPConnection::new(host, cfg.port, cfg.password, cfg.generation, false);
             match conn.connect() {
                 Ok(()) if conn.connected => {
                     let host = conn.host.clone();
+                    if let Some(h) = state.qr_scan.lock().unwrap().take() {
+                        h.stop();
+                    }
                     let mut slot = state.csp.lock().unwrap();
                     *slot = Some(conn);
                     emit_status(app, "connected", Some("qr-scan".into()));
@@ -338,6 +459,18 @@ fn connect_with_url(app: &AppHandle, url: &str) {
 /// csp_process watcher will call us again once CSP appears.
 #[tauri::command]
 pub fn start_qr_scan(app: AppHandle, state: State<'_, AppState>) {
+    let already_connected = state
+        .csp
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.connected)
+        .unwrap_or(false);
+    if already_connected {
+        emit_scan_status(&app, false, Some("already connected"));
+        return;
+    }
+
     if !csp_process::is_running() {
         emit_scan_status(&app, false, Some("waiting for CSP process"));
         println!("[QR] skipped — CSP not running");
@@ -365,4 +498,20 @@ pub fn stop_qr_scan(state: State<'_, AppState>) {
     if let Some(h) = state.qr_scan.lock().unwrap().take() {
         h.stop();
     }
+}
+
+#[cfg(target_os = "windows")]
+fn get_cursor_pos() -> (i32, i32) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    unsafe {
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        (pt.x, pt.y)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_cursor_pos() -> (i32, i32) {
+    (100, 100)
 }

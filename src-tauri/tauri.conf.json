@@ -21,6 +21,20 @@
         "visible": false,
         "transparent": false,
         "focus": true
+      },
+      {
+        "label": "settings",
+        "title": "Luma Palette",
+        "url": "settings.html",
+        "width": 520,
+        "height": 620,
+        "decorations": true,
+        "resizable": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false,
+        "transparent": false,
+        "focus": true
       }
     ],
     "security": {
