@@ -214,8 +214,15 @@ async function monitorForPoint(x, y) {
 
 function monitorBounds(monitor) {
   const area = monitor?.workArea || monitor;
-  const position = area?.position || { x: 0, y: 0 };
-  const size = area?.size || { width: 1920, height: 1080 };
+  const hasFlatRect =
+    Number.isFinite(area?.x) &&
+    Number.isFinite(area?.y) &&
+    Number.isFinite(area?.width) &&
+    Number.isFinite(area?.height);
+  const position = hasFlatRect ? { x: area.x, y: area.y } : (area?.position || { x: 0, y: 0 });
+  const size = hasFlatRect
+    ? { width: area.width, height: area.height }
+    : (area?.size || { width: 1920, height: 1080 });
   return {
     left: position.x,
     top: position.y,
