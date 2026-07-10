@@ -152,7 +152,11 @@ Luma Palette stays in the Windows system tray when closed.
 - Reference protocol implementation: chocolatkey/clipremote.
 - Protocol notes: [`PROTOCOL.md`](PROTOCOL.md).
 
-MIT licensed.
+Licensed under the [GNU General Public License v3.0 or later](LICENSE).
+Forks and redistributed builds must keep the copyright and license notices,
+mark modified versions, and provide corresponding source code under the GPL.
+Please preserve [`NOTICE`](NOTICE) so users can find and credit the upstream
+project.
 
 ---
 
@@ -274,4 +278,6 @@ Luma Palette 關閉視窗後會留在 Windows 系統匣中執行。
 - 感謝 chocolatkey/clipremote 分享 CSP Companion Mode 解析的部分參考。
 - 協定筆記請參考 [`PROTOCOL.md`](PROTOCOL.md)。
 
-本專案採用 [MIT License](LICENSE) 授權。
+本專案採用 [GNU General Public License v3.0 or later](LICENSE) 授權。
+衍生版本與重新散布的建置檔必須保留著作權與授權聲明、標示已修改版本，並依 GPL
+提供對應原始碼。也請保留 [`NOTICE`](NOTICE)，讓使用者可以找到並標註上游專案。

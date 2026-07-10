@@ -3,6 +3,7 @@ name = "luma-palette-csp"
 version = "0.1.2"
 description = "Luma Palette for Clip Studio Paint"
 authors = ["Andy Fang"]
+license = "GPL-3.0-or-later"
 edition = "2021"
 
 [lib]
