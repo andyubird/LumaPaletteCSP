@@ -281,3 +281,30 @@ Luma Palette 關閉視窗後會留在 Windows 系統匣中執行。
 本專案採用 [GNU General Public License v3.0 or later](LICENSE) 授權。
 衍生版本與重新散布的建置檔必須保留著作權與授權聲明、標示已修改版本，並依 GPL
 提供對應原始碼。也請保留 [`NOTICE`](NOTICE)，讓使用者可以找到並標註上游專案。
+
+## Maintainer Releases
+
+Windows releases are built automatically from stable version tags. Before tagging, update the
+version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and
+`src-tauri/tauri.conf.json`, then verify it locally:
+
+```powershell
+npm run release:check -- v0.1.3
+npm test
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+```
+
+Open a pull request for the version change. The `Windows PR package` workflow runs the locked
+tests and uploads the portable executable, NSIS installer, and MSI for seven days. Test those
+artifacts on Windows, including any affected DPI and multi-monitor setups, before merging.
+
+After the pull request is reviewed and merged into `main`, create and push an annotated tag:
+
+```powershell
+git tag -a v0.1.3 -m "v0.1.3"
+git push origin v0.1.3
+```
+
+The `Release` GitHub Actions workflow builds the portable executable, NSIS installer, and MSI as
+an unsigned Windows x64 draft release. Review the generated notes and assets on GitHub before
+publishing the release.

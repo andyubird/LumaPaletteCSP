@@ -1,0 +1,83 @@
+name: Windows PR package
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package Windows PR
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate version consistency
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          npm run release:check -- "v$version"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Version validation failed."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Build MSI and NSIS installers
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: --bundles msi,nsis
+          uploadUpdaterJson: false
+
+      - name: Stage release assets
+        id: assets
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $assetDir = Join-Path $env:RUNNER_TEMP "release-assets"
+          $assetDir = & ./scripts/stage-release-assets.ps1 `
+            -Version $env:VERSION `
+            -Destination $assetDir
+          "asset_dir=$assetDir" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Windows package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Luma-Palette-v${{ steps.version.outputs.version }}-windows-x64
+          path: ${{ steps.assets.outputs.asset_dir }}
+          if-no-files-found: error
+          retention-days: 7

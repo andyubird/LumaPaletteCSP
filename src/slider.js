@@ -47,7 +47,6 @@ export class SliderRenderer {
   pickL(y) {
     const h = this.canvas.height;
     const clampedY = Math.max(0, Math.min(h - 1, y));
-    const L = 1 - clampedY / (h - 1);
-    return Math.max(0.05, Math.min(0.95, L));
+    return 1 - clampedY / (h - 1);
   }
 }

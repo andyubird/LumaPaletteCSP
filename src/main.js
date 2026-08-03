@@ -2,6 +2,7 @@ import { createWheel, WHEEL_RADIUS } from "./wheel.js";
 import { SliderRenderer } from "./slider.js";
 import { updateInfoBar } from "./ui.js";
 import { hexToRgb, rgbToHex } from "./oklch.js";
+import { measurePaletteLogicalSize } from "./palette-layout.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -24,8 +25,6 @@ let currentSlot = 0; // 0 = main, 1 = sub
 let infoMode = { kind: "status", key: "waitingCsp" };
 let gamutWarning = false;
 
-const MIN_PALETTE_W = 340;
-const MIN_PALETTE_H = 310;
 const EDGE_GAP = 30;
 
 function setColor(hex, { sync = true, markerAt = null } = {}) {
@@ -99,8 +98,12 @@ function sendColorThrottled(hex) {
 
 function setLightness(L) {
   currentL = L;
+  const selectedPoint = wheel.getSelectedPoint();
+  const hex = wheel.colorAtAxis(L);
+  setColor(hex, { sync: false, markerAt: selectedPoint });
   renderWheel();
   slider.render(L);
+  return hex;
 }
 
 async function showPaletteAt(x, y, r, g, b, slot) {
@@ -147,17 +150,17 @@ async function showPaletteAt(x, y, r, g, b, slot) {
 }
 
 async function resizePaletteForMonitor(win, monitor) {
-  const logicalSize = measurePaletteLogicalSize();
-  await win.setSize(new LogicalSize(logicalSize.width, logicalSize.height));
+  const measured = measurePaletteLogicalSize(
+    document.querySelector(".topbar"),
+    document.querySelector(".container"),
+  );
+  const logicalSize = new LogicalSize(measured.width, measured.height);
+  await win.setSize(logicalSize);
   await nextFrame();
-  await win.setSize(new LogicalSize(logicalSize.width, logicalSize.height));
+  await win.setSize(logicalSize);
 
-  const actual = await win.innerSize();
   const scaleFactor = monitor?.scaleFactor || window.devicePixelRatio || 1;
-  return {
-    width: Math.max(actual.width, Math.ceil(logicalSize.width * scaleFactor)),
-    height: Math.max(actual.height, Math.ceil(logicalSize.height * scaleFactor)),
-  };
+  return logicalSize.toPhysical(scaleFactor);
 }
 
 async function preparePaletteWindow() {
@@ -173,25 +176,6 @@ async function preparePaletteWindow() {
 
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
-}
-
-function measurePaletteLogicalSize() {
-  const topbar = document.querySelector(".topbar");
-  const container = document.querySelector(".container");
-  const width = Math.max(
-    MIN_PALETTE_W,
-    document.documentElement.scrollWidth,
-    document.body.scrollWidth,
-    Math.ceil(container?.scrollWidth || 0),
-    Math.ceil(topbar?.scrollWidth || 0),
-  );
-  const height = Math.max(
-    MIN_PALETTE_H,
-    document.documentElement.scrollHeight,
-    document.body.scrollHeight,
-    Math.ceil((topbar?.getBoundingClientRect().height || 0) + (container?.scrollHeight || 0)),
-  );
-  return { width, height };
 }
 
 async function monitorForPoint(x, y) {
@@ -396,16 +380,17 @@ let sliderPtrId = null;
 slider.canvas.addEventListener("pointerdown", (e) => {
   slider.canvas.setPointerCapture(e.pointerId);
   sliderPtrId = e.pointerId;
-  setLightness(slider.pickL(e.offsetY));
+  sendColorNow(setLightness(slider.pickL(e.offsetY)));
 });
 slider.canvas.addEventListener("pointermove", (e) => {
   if (sliderPtrId !== e.pointerId) return;
-  setLightness(slider.pickL(e.offsetY));
+  sendColorThrottled(setLightness(slider.pickL(e.offsetY)));
 });
 function endSliderDrag() {
   if (sliderPtrId === null) return;
   try { slider.canvas.releasePointerCapture(sliderPtrId); } catch {}
   sliderPtrId = null;
+  sendColorNow(currentHex);
 }
 slider.canvas.addEventListener("pointerup", endSliderDrag);
 slider.canvas.addEventListener("pointercancel", endSliderDrag);
