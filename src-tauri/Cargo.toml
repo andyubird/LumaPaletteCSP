@@ -1,6 +1,6 @@
 [package]
 name = "luma-palette-csp"
-version = "0.1.2"
+version = "0.1.3"
 description = "Luma Palette for Clip Studio Paint"
 authors = ["Andy Fang"]
 license = "GPL-3.0-or-later"

@@ -30,6 +30,25 @@ function hue360ToScreenAngleRad(h360) {
   return ((HUE_OFFSET_DEG - h360) * Math.PI) / 180;
 }
 
+const clamp01 = (value) => Math.max(0, Math.min(1, value));
+
+function pointFromMarker(marker) {
+  if (Array.isArray(marker)) return { x: marker[0], y: marker[1] };
+  return { x: marker.x, y: marker.y };
+}
+
+function pointForPolar(hue360, radius) {
+  const angle = hue360ToScreenAngleRad(hue360);
+  return {
+    x: WHEEL_RADIUS + radius * Math.cos(angle),
+    y: WHEEL_RADIUS - radius * Math.sin(angle),
+  };
+}
+
+function selectedPointArray(point) {
+  return [point.x, point.y];
+}
+
 function setupCanvas(canvas) {
   canvas.width = WHEEL_RADIUS * 2;
   canvas.height = WHEEL_RADIUS * 2;
@@ -152,7 +171,7 @@ class OklchWheel {
     this.currentL = 0.65;
     this.gamutWarning = false;
     this.currentHex = "#808080";
-    this.markerAt = null;
+    this.selectedPoint = this._pointForHex(this.currentHex);
   }
   render(L) {
     this.currentL = L;
@@ -165,26 +184,34 @@ class OklchWheel {
   }
   setCurrentColor(hex, markerAt) {
     this.currentHex = hex;
-    this.markerAt = markerAt || null;
+    this.selectedPoint = markerAt
+      ? pointFromMarker(markerAt)
+      : this._pointForHex(hex);
     this._draw();
+  }
+  _pointForHex(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const [, chroma, hue] = rgb2oklch(r, g, b);
+    return pointForPolar(
+      hue,
+      Math.min(chroma / MAX_CHROMA, 1) * WHEEL_RADIUS,
+    );
+  }
+  getSelectedPoint() { return selectedPointArray(this.selectedPoint); }
+  colorAtAxis(L) {
+    const [, , dist, angle] = polar(this.selectedPoint.x, this.selectedPoint.y);
+    const hue = screenAngleDegToHue360(angle);
+    const chroma = Math.min(dist / WHEEL_RADIUS, 1) * MAX_CHROMA;
+    return rgbToHex(...gamutClamp(clamp01(L), chroma, hue));
   }
   _draw() {
     if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    let marker;
-    if (this.markerAt) {
-      marker = { x: this.markerAt[0], y: this.markerAt[1] };
-    } else {
-      const [r, g, b] = hexToRgb(this.currentHex);
-      const [, curC, curH] = rgb2oklch(r, g, b);
-      const distPx = Math.min(curC / MAX_CHROMA, 1) * WHEEL_RADIUS;
-      const screenAngleRad = ((150 - curH) * Math.PI) / 180;
-      marker = { distPx, screenAngleRad };
-    }
-    drawOverlay(this.ctx, this.currentHex, marker);
+    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
   }
   pickAt(x, y) {
     const [, , dist, angle] = polar(x, y);
     if (dist > WHEEL_RADIUS - 1) return null;
+    this.selectedPoint = { x, y };
     const hue = ((150 - angle) % 360 + 360) % 360;
     const chroma = (dist / WHEEL_RADIUS) * MAX_CHROMA;
     const [r, g, b] = gamutClamp(this.currentL, chroma, hue);
@@ -221,7 +248,7 @@ class HsvWheel {
     this.cachedImage = null;
     this.currentL = 1.0; // "L" = V for HSV
     this.currentHex = "#ffffff";
-    this.markerAt = null;
+    this.selectedPoint = this._pointForHex(this.currentHex);
   }
   render(L) {
     this.currentL = L;
@@ -231,27 +258,31 @@ class HsvWheel {
   setGamutWarning(_on) {}
   setCurrentColor(hex, markerAt) {
     this.currentHex = hex;
-    this.markerAt = markerAt || null;
+    this.selectedPoint = markerAt
+      ? pointFromMarker(markerAt)
+      : this._pointForHex(hex);
     this._draw();
+  }
+  _pointForHex(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const [hue, saturation] = rgb2hsv(r, g, b);
+    return pointForPolar(hue * 360, Math.min(saturation, 1) * WHEEL_RADIUS);
+  }
+  getSelectedPoint() { return selectedPointArray(this.selectedPoint); }
+  colorAtAxis(V) {
+    const [, , dist, angle] = polar(this.selectedPoint.x, this.selectedPoint.y);
+    const hue = screenAngleDegToHue360(angle) / 360;
+    const saturation = Math.min(dist / WHEEL_RADIUS, 1);
+    return rgbToHex(...hsv2rgb(hue, saturation, clamp01(V)));
   }
   _draw() {
     if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    let marker;
-    if (this.markerAt) {
-      marker = { x: this.markerAt[0], y: this.markerAt[1] };
-    } else {
-      const [r, g, b] = hexToRgb(this.currentHex);
-      const [h, s] = rgb2hsv(r, g, b);
-      marker = {
-        distPx: Math.min(s, 1) * WHEEL_RADIUS,
-        screenAngleRad: hue360ToScreenAngleRad(h * 360),
-      };
-    }
-    drawOverlay(this.ctx, this.currentHex, marker);
+    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
   }
   pickAt(x, y) {
     const [, , dist, angle] = polar(x, y);
     if (dist > WHEEL_RADIUS - 1) return null;
+    this.selectedPoint = { x, y };
     const hue = screenAngleDegToHue360(angle) / 360;
     const sat = Math.min(1, dist / WHEEL_RADIUS);
     const [r, g, b] = hsv2rgb(hue, sat, this.currentL);
@@ -288,7 +319,7 @@ class HslWheel {
     this.cachedImage = null;
     this.currentL = 0.5;
     this.currentHex = "#808080";
-    this.markerAt = null;
+    this.selectedPoint = this._pointForHex(this.currentHex);
   }
   render(L) {
     this.currentL = L;
@@ -298,27 +329,31 @@ class HslWheel {
   setGamutWarning(_on) {}
   setCurrentColor(hex, markerAt) {
     this.currentHex = hex;
-    this.markerAt = markerAt || null;
+    this.selectedPoint = markerAt
+      ? pointFromMarker(markerAt)
+      : this._pointForHex(hex);
     this._draw();
+  }
+  _pointForHex(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const [hue, saturation] = rgb2hsl(r, g, b);
+    return pointForPolar(hue * 360, Math.min(saturation, 1) * WHEEL_RADIUS);
+  }
+  getSelectedPoint() { return selectedPointArray(this.selectedPoint); }
+  colorAtAxis(L) {
+    const [, , dist, angle] = polar(this.selectedPoint.x, this.selectedPoint.y);
+    const hue = screenAngleDegToHue360(angle) / 360;
+    const saturation = Math.min(dist / WHEEL_RADIUS, 1);
+    return rgbToHex(...hsl2rgb(hue, saturation, clamp01(L)));
   }
   _draw() {
     if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    let marker;
-    if (this.markerAt) {
-      marker = { x: this.markerAt[0], y: this.markerAt[1] };
-    } else {
-      const [r, g, b] = hexToRgb(this.currentHex);
-      const [h, s] = rgb2hsl(r, g, b);
-      marker = {
-        distPx: Math.min(s, 1) * WHEEL_RADIUS,
-        screenAngleRad: hue360ToScreenAngleRad(h * 360),
-      };
-    }
-    drawOverlay(this.ctx, this.currentHex, marker);
+    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
   }
   pickAt(x, y) {
     const [, , dist, angle] = polar(x, y);
     if (dist > WHEEL_RADIUS - 1) return null;
+    this.selectedPoint = { x, y };
     const hue = screenAngleDegToHue360(angle) / 360;
     const sat = Math.min(1, dist / WHEEL_RADIUS);
     const [r, g, b] = hsl2rgb(hue, sat, this.currentL);
@@ -360,7 +395,7 @@ class LabWheel {
     this.currentL = 0.5;
     this.gamutWarning = false;
     this.currentHex = "#808080";
-    this.markerAt = null;
+    this.selectedPoint = this._pointForHex(this.currentHex);
   }
   render(L) {
     this.currentL = L;
@@ -373,24 +408,29 @@ class LabWheel {
   }
   setCurrentColor(hex, markerAt) {
     this.currentHex = hex;
-    this.markerAt = markerAt || null;
+    this.selectedPoint = markerAt
+      ? pointFromMarker(markerAt)
+      : this._pointForHex(hex);
     this._draw();
+  }
+  _pointForHex(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const [, a, labB] = rgb2lab(r, g, b);
+    return pointForLab(a, labB);
+  }
+  getSelectedPoint() { return selectedPointArray(this.selectedPoint); }
+  colorAtAxis(L) {
+    const [a, b] = labAtPoint(this.selectedPoint.x, this.selectedPoint.y);
+    return rgbToHex(...lab2rgb(clamp01(L) * 100, a, b));
   }
   _draw() {
     if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    let marker;
-    if (this.markerAt) {
-      marker = { x: this.markerAt[0], y: this.markerAt[1] };
-    } else {
-      const [r, g, b] = hexToRgb(this.currentHex);
-      const [, a, labB] = rgb2lab(r, g, b);
-      marker = pointForLab(a, labB);
-    }
-    drawOverlay(this.ctx, this.currentHex, marker);
+    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
   }
   pickAt(x, y) {
     const size = WHEEL_RADIUS * 2;
     if (x < 0 || y < 0 || x >= size || y >= size) return null;
+    this.selectedPoint = { x, y };
     const [a, b] = labAtPoint(x, y);
     const [r, g, bl] = lab2rgb(this.currentL * 100, a, b);
     return rgbToHex(r, g, bl);
