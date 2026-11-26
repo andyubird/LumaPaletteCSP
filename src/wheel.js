@@ -1,16 +1,13 @@
 import {
-  oklch2rgb,
-  oklabToLinear,
-  lin2s,
   gamutClamp,
-  inGamut,
   rgb2oklch,
   MAX_CHROMA,
   rgbToHex,
   hexToRgb,
 } from "./oklch.js";
 import { hsv2rgb, rgb2hsv, hsl2rgb, rgb2hsl } from "./color-models.js";
-import { lab2rgb, lab2rgbRaw, rgb2lab } from "./lab.js";
+import { lab2rgb, rgb2lab } from "./lab.js";
+import { createGlSurface } from "./wheel-gl.js";
 
 export const WHEEL_RADIUS = 140;
 
@@ -52,9 +49,46 @@ function selectedPointArray(point) {
   return [point.x, point.y];
 }
 
-function setupCanvas(canvas) {
-  canvas.width = WHEEL_RADIUS * 2;
-  canvas.height = WHEEL_RADIUS * 2;
+// A surface owns the wheel image and hands the wheel a 2D context for its
+// overlay. The real one lives in wheel-gl.js (fragment shaders at device
+// resolution). This fallback exists for environments with no WebGL at all —
+// headless unit tests, or a WebView2 with both GPU and software rendering
+// disabled by policy — and draws only the background and overlay.
+class OverlayOnlySurface {
+  constructor(canvas) {
+    const size = WHEEL_RADIUS * 2;
+    canvas.width = size;
+    canvas.height = size;
+    if (canvas.style) {
+      canvas.style.width = `${size}px`;
+      canvas.style.height = `${size}px`;
+    }
+    this.ctx = canvas.getContext("2d");
+    if (typeof document !== "undefined") {
+      console.warn("[wheel] WebGL unavailable; the color wheel cannot be drawn.");
+    }
+  }
+  renderImage() {}
+  draw(paint) {
+    const size = WHEEL_RADIUS * 2;
+    this.ctx.fillStyle = `rgb(${BG[0]}, ${BG[1]}, ${BG[2]})`;
+    this.ctx.fillRect(0, 0, size, size);
+    paint(this.ctx);
+  }
+  clearImage() {}
+}
+
+// One surface per canvas element, reused across wheel-type swaps so shader
+// programs compile once.
+const surfaces = new WeakMap();
+function surfaceFor(canvas) {
+  let surface = surfaces.get(canvas);
+  if (!surface) {
+    surface = createGlSurface(canvas, WHEEL_RADIUS * 2) || new OverlayOnlySurface(canvas);
+    surfaces.set(canvas, surface);
+  }
+  surface.clearImage();
+  return surface;
 }
 
 // Compute (dx, dy, dist, angleDeg) for pixel (x,y) once.
@@ -64,21 +98,6 @@ function polar(x, y) {
   const dist = Math.sqrt(dx * dx + dy * dy);
   const angle = (Math.atan2(-dy, dx) * 180) / Math.PI;
   return [dx, dy, dist, angle];
-}
-
-// Write an RGBA pixel into an ImageData.data array.
-function putPx(d, i, r, g, b) {
-  d[i] = Math.max(0, Math.min(255, Math.round(r * 255)));
-  d[i + 1] = Math.max(0, Math.min(255, Math.round(g * 255)));
-  d[i + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
-  d[i + 3] = 255;
-}
-
-function putBg(d, i) {
-  d[i] = BG[0];
-  d[i + 1] = BG[1];
-  d[i + 2] = BG[2];
-  d[i + 3] = 255;
 }
 
 // Draw center dot + marker for a wheel. `marker` is either
@@ -132,113 +151,10 @@ function pointForLab(a, b) {
 
 // -------- OKLCH wheel --------
 
-// Pixel geometry (hue, chroma, inside-the-disc) never changes between renders;
-// compute it once instead of a sqrt + atan2 per pixel per frame.
-let oklchGeometry = null;
-function getOklchGeometry() {
-  if (oklchGeometry) return oklchGeometry;
-  const size = WHEEL_RADIUS * 2;
-  const count = size * size;
-  const hue = new Float32Array(count);
-  const chroma = new Float32Array(count);
-  const cosH = new Float32Array(count);
-  const sinH = new Float32Array(count);
-  const inside = new Uint8Array(count);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const p = y * size + x;
-      const [, , dist, angle] = polar(x, y);
-      if (dist > WHEEL_RADIUS - 1) continue;
-      inside[p] = 1;
-      const h = ((150 - angle) % 360 + 360) % 360;
-      hue[p] = h;
-      chroma[p] = (dist / WHEEL_RADIUS) * MAX_CHROMA;
-      const rad = (h * Math.PI) / 180;
-      cosH[p] = Math.cos(rad);
-      sinH[p] = Math.sin(rad);
-    }
-  }
-  oklchGeometry = { size, hue, chroma, cosH, sinH, inside };
-  return oklchGeometry;
-}
-
-// Linear→sRGB transfer through an interpolated lookup table. Math.pow per
-// channel per pixel was most of what remained of the per-frame cost; 4096
-// steps with linear interpolation stays well under one 8-bit level of error.
-const LIN2S_STEPS = 4096;
-const LIN2S_LUT = new Float32Array(LIN2S_STEPS + 2);
-for (let i = 0; i < LIN2S_LUT.length; i++) {
-  LIN2S_LUT[i] = lin2s(Math.min(i / LIN2S_STEPS, 1));
-}
-function lin2sFast(c) {
-  if (c <= 0) return 0;
-  if (c >= 1) return 1;
-  const t = c * LIN2S_STEPS;
-  const i = t | 0;
-  return LIN2S_LUT[i] + (LIN2S_LUT[i + 1] - LIN2S_LUT[i]) * (t - i);
-}
-
-// Along a fixed-hue ray at fixed L the in-gamut chromas form one interval
-// [0, Cmax] — the same monotonicity gamutClamp's binary search relies on. So
-// search once per hue bin instead of once per out-of-gamut pixel: 1441
-// searches per frame rather than tens of thousands. 0.25° bins are finer than
-// the ~0.4° a rim pixel subtends; values are interpolated between bins.
-const OKLCH_HUE_BINS = 1440;
-function maxChromaByHue(L) {
-  const out = new Float32Array(OKLCH_HUE_BINS + 1);
-  for (let i = 0; i <= OKLCH_HUE_BINS; i++) {
-    const h = (i / OKLCH_HUE_BINS) * 360;
-    let lo = 0;
-    let hi = MAX_CHROMA;
-    if (inGamut(...oklch2rgb(L, hi, h))) {
-      out[i] = hi;
-      continue;
-    }
-    for (let k = 0; k < 20; k++) {
-      const mid = (lo + hi) / 2;
-      if (inGamut(...oklch2rgb(L, mid, h))) lo = mid;
-      else hi = mid;
-    }
-    out[i] = lo;
-  }
-  return out;
-}
-
-function renderOklchImage(L, gamutWarning) {
-  const { size, hue, chroma, cosH, sinH, inside } = getOklchGeometry();
-  const cmax = maxChromaByHue(L);
-  const binScale = OKLCH_HUE_BINS / 360;
-  const img = new ImageData(size, size);
-  const d = img.data;
-
-  for (let p = 0, i = 0; p < size * size; p++, i += 4) {
-    if (!inside[p]) {
-      putBg(d, i);
-      continue;
-    }
-    const hb = hue[p] * binScale;
-    const b0 = hb | 0;
-    const limit = cmax[b0] + (cmax[b0 + 1] - cmax[b0]) * (hb - b0);
-    let c = chroma[p];
-    if (c > limit) {
-      if (gamutWarning) {
-        d[i] = 80; d[i + 1] = 80; d[i + 2] = 82; d[i + 3] = 255;
-        continue;
-      }
-      c = limit;
-    }
-    const [lr, lg, lb] = oklabToLinear(L, c * cosH[p], c * sinH[p]);
-    putPx(d, i, lin2sFast(lr), lin2sFast(lg), lin2sFast(lb));
-  }
-  return img;
-}
-
 class OklchWheel {
   constructor(canvas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
-    setupCanvas(canvas);
-    this.cachedImage = null;
+    this.surface = surfaceFor(canvas);
     this.currentL = 0.65;
     this.gamutWarning = false;
     this.currentHex = "#808080";
@@ -246,7 +162,7 @@ class OklchWheel {
   }
   render(L) {
     this.currentL = L;
-    this.cachedImage = renderOklchImage(L, this.gamutWarning);
+    this.surface.renderImage("oklch", { L, gamutWarning: this.gamutWarning });
     this._draw();
   }
   setGamutWarning(on, rerender = true) {
@@ -276,8 +192,7 @@ class OklchWheel {
     return rgbToHex(...gamutClamp(clamp01(L), chroma, hue));
   }
   _draw() {
-    if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
+    this.surface.draw((ctx) => drawOverlay(ctx, this.currentHex, this.selectedPoint));
   }
   pickAt(x, y) {
     const [, , dist, angle] = polar(x, y);
@@ -293,37 +208,17 @@ class OklchWheel {
 
 // -------- HSV wheel (angle=hue, radial=saturation, L=value) --------
 
-function renderHsvImage(V) {
-  const size = WHEEL_RADIUS * 2;
-  const img = new ImageData(size, size);
-  const d = img.data;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const [, , dist, angle] = polar(x, y);
-      if (dist > WHEEL_RADIUS - 1) { putBg(d, i); continue; }
-      const hue = screenAngleDegToHue360(angle) / 360;
-      const sat = dist / WHEEL_RADIUS;
-      const [r, g, b] = hsv2rgb(hue, sat, V);
-      putPx(d, i, r, g, b);
-    }
-  }
-  return img;
-}
-
 class HsvWheel {
   constructor(canvas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
-    setupCanvas(canvas);
-    this.cachedImage = null;
+    this.surface = surfaceFor(canvas);
     this.currentL = 1.0; // "L" = V for HSV
     this.currentHex = "#ffffff";
     this.selectedPoint = this._pointForHex(this.currentHex);
   }
   render(L) {
     this.currentL = L;
-    this.cachedImage = renderHsvImage(L);
+    this.surface.renderImage("hsv", { L });
     this._draw();
   }
   setGamutWarning(_on) {}
@@ -347,8 +242,7 @@ class HsvWheel {
     return rgbToHex(...hsv2rgb(hue, saturation, clamp01(V)));
   }
   _draw() {
-    if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
+    this.surface.draw((ctx) => drawOverlay(ctx, this.currentHex, this.selectedPoint));
   }
   pickAt(x, y) {
     const [, , dist, angle] = polar(x, y);
@@ -364,37 +258,17 @@ class HsvWheel {
 
 // -------- HSL wheel (angle=hue, radial=saturation, L=lightness) --------
 
-function renderHslImage(L) {
-  const size = WHEEL_RADIUS * 2;
-  const img = new ImageData(size, size);
-  const d = img.data;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const [, , dist, angle] = polar(x, y);
-      if (dist > WHEEL_RADIUS - 1) { putBg(d, i); continue; }
-      const hue = screenAngleDegToHue360(angle) / 360;
-      const sat = dist / WHEEL_RADIUS;
-      const [r, g, b] = hsl2rgb(hue, sat, L);
-      putPx(d, i, r, g, b);
-    }
-  }
-  return img;
-}
-
 class HslWheel {
   constructor(canvas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
-    setupCanvas(canvas);
-    this.cachedImage = null;
+    this.surface = surfaceFor(canvas);
     this.currentL = 0.5;
     this.currentHex = "#808080";
     this.selectedPoint = this._pointForHex(this.currentHex);
   }
   render(L) {
     this.currentL = L;
-    this.cachedImage = renderHslImage(L);
+    this.surface.renderImage("hsl", { L });
     this._draw();
   }
   setGamutWarning(_on) {}
@@ -418,8 +292,7 @@ class HslWheel {
     return rgbToHex(...hsl2rgb(hue, saturation, clamp01(L)));
   }
   _draw() {
-    if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
+    this.surface.draw((ctx) => drawOverlay(ctx, this.currentHex, this.selectedPoint));
   }
   pickAt(x, y) {
     const [, , dist, angle] = polar(x, y);
@@ -435,34 +308,10 @@ class HslWheel {
 
 // -------- Photoshop-style Lab wheel (x=a, y=b, slider/current color=L) --------
 
-function renderLabImage(L, gamutWarning) {
-  const size = WHEEL_RADIUS * 2;
-  const img = new ImageData(size, size);
-  const d = img.data;
-  const labL = L * 100;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const [a, b] = labAtPoint(x, y);
-      const raw = lab2rgbRaw(labL, a, b);
-      const fits = raw.every((v) => v >= -0.002 && v <= 1.002);
-      if (!fits && gamutWarning) {
-        d[i] = 78; d[i + 1] = 78; d[i + 2] = 82; d[i + 3] = 255;
-        continue;
-      }
-      const [r, g, bl] = fits ? raw : lab2rgb(labL, a, b);
-      putPx(d, i, r, g, bl);
-    }
-  }
-  return img;
-}
-
 class LabWheel {
   constructor(canvas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
-    setupCanvas(canvas);
-    this.cachedImage = null;
+    this.surface = surfaceFor(canvas);
     this.currentL = 0.5;
     this.gamutWarning = false;
     this.currentHex = "#808080";
@@ -470,7 +319,7 @@ class LabWheel {
   }
   render(L) {
     this.currentL = L;
-    this.cachedImage = renderLabImage(L, this.gamutWarning);
+    this.surface.renderImage("lab", { L, gamutWarning: this.gamutWarning });
     this._draw();
   }
   setGamutWarning(on, rerender = true) {
@@ -495,8 +344,7 @@ class LabWheel {
     return rgbToHex(...lab2rgb(clamp01(L) * 100, a, b));
   }
   _draw() {
-    if (this.cachedImage) this.ctx.putImageData(this.cachedImage, 0, 0);
-    drawOverlay(this.ctx, this.currentHex, this.selectedPoint);
+    this.surface.draw((ctx) => drawOverlay(ctx, this.currentHex, this.selectedPoint));
   }
   pickAt(x, y) {
     const size = WHEEL_RADIUS * 2;

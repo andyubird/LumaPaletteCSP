@@ -67,8 +67,22 @@ body {
   gap: 12px;
 }
 
+.wheel-stack {
+  position: relative;
+  flex: 0 0 auto;
+}
+
 #wheel, #slider {
   display: block;
   flex: 0 0 auto;
   cursor: crosshair;
+}
+
+/* Marker/center-dot layer over the WebGL wheel; input goes to #wheel. */
+#wheel-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  pointer-events: none;
 }
