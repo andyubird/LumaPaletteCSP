@@ -8,10 +8,13 @@ function fakeContext() {
   return {
     arc() {},
     beginPath() {},
+    clearRect() {},
+    setTransform() {},
     createImageData(width, height) {
       return { data: new Uint8ClampedArray(width * height * 4) };
     },
     fill() {},
+    fillRect() {},
     lineTo() {},
     moveTo() {},
     putImageData() {},

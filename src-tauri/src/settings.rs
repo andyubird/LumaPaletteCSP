@@ -21,6 +21,10 @@ pub struct Settings {
     /// Custom global shortcut accelerator string. Empty string disables it.
     #[serde(default = "default_hotkey")]
     pub global_hotkey: String,
+    /// Whether `global_hotkey` is active. Lets the user switch the shortcut off
+    /// without losing the key they configured.
+    #[serde(default)]
+    pub hotkey_enabled: bool,
     /// Whether ALT+left-click should summon Luma after CSP's own eyedropper
     /// commits the sampled brush color.
     #[serde(default = "always_true")]
@@ -63,6 +67,7 @@ impl Default for Settings {
             language: default_language(),
             wheel_type: "oklch".into(),
             global_hotkey: default_hotkey(),
+            hotkey_enabled: false,
             show_after_alt_pick: true,
             has_seen_welcome: false,
             notify_on_startup: true,
@@ -101,7 +106,27 @@ pub fn load() -> Settings {
     let Ok(txt) = fs::read_to_string(&path) else {
         return Settings::default();
     };
-    serde_json::from_str(&txt).unwrap_or_default()
+    let mut settings: Settings = serde_json::from_str(&txt).unwrap_or_default();
+    // Save files written before `hotkey_enabled` existed signalled "on" by a
+    // non-empty hotkey; preserve that so upgrading doesn't silently disable it.
+    let has_enabled_field = serde_json::from_str::<serde_json::Value>(&txt)
+        .map(|v| v.get("hotkey_enabled").is_some())
+        .unwrap_or(false);
+    if !has_enabled_field {
+        settings.hotkey_enabled = !settings.global_hotkey.is_empty();
+    }
+    settings
+}
+
+impl Settings {
+    /// The accelerator the hook should listen for: empty when disabled.
+    pub fn active_hotkey(&self) -> String {
+        if self.hotkey_enabled {
+            self.global_hotkey.clone()
+        } else {
+            String::new()
+        }
+    }
 }
 
 pub fn save(s: &Settings) {

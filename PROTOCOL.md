@@ -111,6 +111,15 @@ Empty `{}` response = you're in the idle gate; send an active heartbeat first.
 ```
 CSP then diffs your declared state against reality and returns a *full* color payload. The implementation in this repo uses this trick in `get_color_rgb`.
 
+**Color-circle model:** the field names follow CSP's current color-circle
+model, not the request's `ColorSelectionModel`. Observed 2026-11-25 with the
+circle set to HLS: the reply carries `"ColorSelectionModel":"HLS"` and
+`HLSColorMainH/L/S` + `HLSColorSubH/L/S` (same u32 scale) and **no HSV
+fields at all**, even for the stale-state request above. The client must
+parse `{Model}Color{Main|Sub}{Component}` for every model (HSV, HLS; RGB
+presumably `RGBColorMain{R,G,B}`, unverified). `SetCurrentColor` with
+`ColorSpaceKind:"HSV"` still works in HLS mode.
+
 **`SetCurrentColor`** — write the fore/background color.
 
 Request detail:

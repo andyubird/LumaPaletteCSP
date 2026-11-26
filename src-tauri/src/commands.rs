@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
+use tauri::{PhysicalPosition, PhysicalSize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::csp::crypto::decode_qr_url;
@@ -79,6 +80,86 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> AppSnapshot {
     }
 }
 
+/// Hide the palette and its click shield together and tell the frontend, so
+/// it can reset the open animation for the next show.
+pub fn hide_palette(app: &AppHandle, reason: &str) {
+    crate::diag::log(format!("hide_palette ({reason})"));
+    input_hook::set_palette_visible(false);
+    input_hook::rearm_shortcut();
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    if let Some(shield) = app.get_webview_window("shield") {
+        let _ = shield.hide();
+    }
+    let _ = app.emit("palette-hidden", ());
+}
+
+#[tauri::command]
+pub fn dismiss_palette(app: AppHandle) {
+    hide_palette(&app, "shield-dismiss");
+}
+
+#[tauri::command]
+pub fn debug_enabled() -> bool {
+    crate::diag::enabled()
+}
+
+#[tauri::command]
+pub fn debug_log(msg: String) {
+    crate::diag::log(format!("js {msg}"));
+}
+
+/// Cover every monitor with the transparent, non-activating shield window so a
+/// press outside the palette dismisses it instead of reaching CSP's canvas.
+/// The frontend calls this just before showing the palette on top of it.
+///
+/// The palette is never explicitly activated (see main.js) and may stay
+/// unfocused, so nothing orders the two windows implicitly: the z-order is set
+/// here explicitly, palette at the top of the topmost band and the shield
+/// directly beneath it.
+#[tauri::command]
+pub fn show_shield(app: AppHandle) {
+    crate::diag::log("show_shield");
+    input_hook::set_palette_visible(true);
+    let Some(shield) = app.get_webview_window("shield") else {
+        return;
+    };
+    #[cfg(target_os = "windows")]
+    if let (Ok(shield_hwnd), Some(Ok(palette_hwnd))) = (
+        shield.hwnd(),
+        app.get_webview_window("main").map(|w| w.hwnd()),
+    ) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        let palette = HWND(palette_hwnd.0 as *mut core::ffi::c_void);
+        let shield_h = HWND(shield_hwnd.0 as *mut core::ffi::c_void);
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        unsafe {
+            let _ = SetWindowPos(palette, HWND_TOPMOST, 0, 0, 0, 0, flags);
+            let _ = SetWindowPos(shield_h, palette, 0, 0, 0, 0, flags);
+        }
+    }
+    if let Ok(monitors) = app.available_monitors() {
+        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for m in &monitors {
+            let p = m.position();
+            let s = m.size();
+            left = left.min(p.x);
+            top = top.min(p.y);
+            right = right.max(p.x + s.width as i32);
+            bottom = bottom.max(p.y + s.height as i32);
+        }
+        if left < right && top < bottom {
+            let _ = shield.set_position(PhysicalPosition::new(left, top));
+            let _ = shield.set_size(PhysicalSize::new((right - left) as u32, (bottom - top) as u32));
+        }
+    }
+    let _ = shield.show();
+}
+
 pub fn show_status_settings(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.show();
@@ -120,7 +201,7 @@ pub struct ColorUpdate {
     pub slot: u8,
 }
 
-fn emit_color(app: &AppHandle, rgb: (u8, u8, u8), slot: u8) {
+pub fn emit_color(app: &AppHandle, rgb: (u8, u8, u8), slot: u8) {
     let _ = app.emit(
         "color-update",
         ColorUpdate {
@@ -291,26 +372,34 @@ pub struct ShowPalettePayload {
     pub slot: Option<u8>,
 }
 
+/// How long to wait after an ALT+click before sampling, so CSP's built-in
+/// eyedropper has committed the new brush color. Only the ALT+click path needs
+/// this; every other trigger passes 0 so the palette opens immediately.
+pub const ALT_PICK_SETTLE_MS: u64 = 180;
+
 /// Sample current CSP color, then tell the frontend to show the palette at (x, y).
-/// Called by the ALT+click hook and the tray left-click.
+/// Called by the ALT+click hook, the global shortcut, and the tray left-click.
 ///
-/// Sampling runs on a background thread with a short delay so CSP's built-in
-/// ALT+click eyedropper has time to commit the new brush color before we read
-/// it. We only emit `show-palette` after the sample lands — this way the
-/// frontend positions the marker for the correct color *before* the window
-/// appears, avoiding the visible "jump" of the marker circle.
-pub fn sample_and_show(app: &AppHandle, x: i32, y: i32) {
+/// Sampling runs on a background thread, after `delay_ms` (see
+/// `ALT_PICK_SETTLE_MS`). We only emit `show-palette` after the sample lands —
+/// this way the frontend positions the marker for the correct color *before*
+/// the window appears, avoiding the visible "jump" of the marker circle.
+pub fn sample_and_show(app: &AppHandle, x: i32, y: i32, delay_ms: u64) {
     if RESTRICT_TO_CSP.load(Ordering::Relaxed) && !input_hook::is_csp_foreground() {
+        crate::diag::log("sample_and_show blocked: CSP not foreground");
         return;
     }
+    crate::diag::log(format!("sample_and_show x={x} y={y} delay={delay_ms}"));
 
-    sample_and_show_unrestricted(app, x, y);
+    sample_and_show_unrestricted(app, x, y, delay_ms);
 }
 
-fn sample_and_show_unrestricted(app: &AppHandle, x: i32, y: i32) {
+fn sample_and_show_unrestricted(app: &AppHandle, x: i32, y: i32, delay_ms: u64) {
     let app_bg = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(180));
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
         let state: State<'_, AppState> = app_bg.state();
         let (rgb, slot_idx) = {
             let mut slot = state.csp.lock().unwrap();
@@ -319,6 +408,7 @@ fn sample_and_show_unrestricted(app: &AppHandle, x: i32, y: i32) {
                 None => (None, None),
             }
         };
+        crate::diag::log("emit show-palette");
         let _ = app_bg.emit(
             "show-palette",
             ShowPalettePayload {
@@ -338,13 +428,13 @@ pub fn sample_after_alt_pick(app: &AppHandle, x: i32, y: i32) {
     if !state.settings.get().show_after_alt_pick {
         return;
     }
-    sample_and_show(app, x, y);
+    sample_and_show(app, x, y, ALT_PICK_SETTLE_MS);
 }
 
 #[tauri::command]
 pub fn show_palette_at_cursor(app: AppHandle) {
     let (x, y) = get_cursor_pos();
-    sample_and_show_unrestricted(&app, x, y);
+    sample_and_show_unrestricted(&app, x, y, 0);
 }
 
 #[tauri::command]
@@ -410,6 +500,14 @@ pub fn set_global_hotkey(
     let _ = app.emit("global-hotkey-changed", hotkey);
     let _ = app.emit("settings-changed", state.settings.get());
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_hotkey_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) {
+    state.settings.update(|s| s.hotkey_enabled = enabled);
+    let settings = state.settings.get();
+    let _ = app.emit("global-hotkey-changed", settings.active_hotkey());
+    let _ = app.emit("settings-changed", settings);
 }
 
 fn emit_scan_status(app: &AppHandle, scanning: bool, message: Option<&str>) {

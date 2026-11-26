@@ -1,5 +1,6 @@
 pub mod color;
 pub mod commands;
+mod diag;
 pub mod csp;
 pub mod csp_process;
 pub mod input_hook;
@@ -64,14 +65,20 @@ pub fn run() {
 
             let shortcut_settings_handle = app.handle().clone();
             let shortcut_action_handle = app.handle().clone();
+            let escape_handle = app.handle().clone();
             input_hook::install_shortcut(
                 move || {
                     let state: tauri::State<'_, AppState> = shortcut_settings_handle.state();
-                    state.settings.get().global_hotkey
+                    state.settings.get().active_hotkey()
                 },
                 move || {
                     let (x, y) = get_cursor_pos();
-                    commands::sample_and_show(&shortcut_action_handle, x, y);
+                    commands::sample_and_show(&shortcut_action_handle, x, y, 0);
+                },
+                move || {
+                    // Off the hook thread: window calls must not stall it.
+                    let handle = escape_handle.clone();
+                    thread::spawn(move || commands::hide_palette(&handle, "escape"));
                 },
             );
 
@@ -87,7 +94,7 @@ pub fn run() {
             app.listen("tray-show-palette", move |_| {
                 // Tray left-click → sample at last known cursor via OS.
                 let (x, y) = get_cursor_pos();
-                commands::sample_and_show(&show_handle, x, y);
+                commands::sample_and_show(&show_handle, x, y, 0);
             });
 
             let rescan_handle = app.handle().clone();
@@ -163,6 +170,7 @@ pub fn run() {
             thread::spawn(move || loop {
                 thread::sleep(Duration::from_secs(3));
                 let state: tauri::State<'_, AppState> = hb_handle.state();
+                let mut change = None;
                 let dropped = {
                     let mut slot = state.csp.lock().unwrap();
                     if let Some(conn) = slot.as_mut() {
@@ -171,12 +179,18 @@ pub fn run() {
                             *slot = None;
                             true
                         } else {
+                            // Anything CSP buffered since the last read was
+                            // absorbed while waiting for the heartbeat reply.
+                            change = conn.take_color_change();
                             false
                         }
                     } else {
                         false
                     }
                 };
+                if let Some((rgb, idx)) = change {
+                    commands::emit_color(&hb_handle, rgb, idx);
+                }
                 if dropped {
                     let _ = hb_handle.emit(
                         "connection-status",
@@ -191,6 +205,35 @@ pub fn run() {
                 }
             });
 
+            // Color poll — CSP has no push channel (PROTOCOL.md: Sync* is the
+            // only read API), so while the palette is visible ask it a few
+            // times a second and forward changes. Backs off right after our
+            // own writes so a read-back can't fight a drag in progress.
+            let poll_handle = app.handle().clone();
+            thread::spawn(move || loop {
+                thread::sleep(Duration::from_millis(250));
+                if !input_hook::palette_visible() {
+                    continue;
+                }
+                let state: tauri::State<'_, AppState> = poll_handle.state();
+                let change = {
+                    let mut slot = state.csp.lock().unwrap();
+                    match slot.as_mut() {
+                        Some(conn)
+                            if conn.connected
+                                && !conn.recently_set(Duration::from_millis(700)) =>
+                        {
+                            conn.poll_color();
+                            conn.take_color_change()
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some((rgb, idx)) = change {
+                    commands::emit_color(&poll_handle, rgb, idx);
+                }
+            });
+
             // CLI arg: a QR URL bypasses the scan entirely.
             if let Some(url) = cli_qr_url() {
                 let url_handle = app.handle().clone();
@@ -202,12 +245,14 @@ pub fn run() {
                 });
             }
 
-            // Hide the main window when it loses focus (click-outside-to-dismiss).
+            // Hide the palette (and its click shield) when it loses focus, e.g.
+            // on Alt+Tab. Ordinary click-outside dismissal goes through the
+            // shield window's `dismiss_palette` instead.
             if let Some(win) = app.get_webview_window("main") {
-                let win_clone = win.clone();
+                let focus_handle = app.handle().clone();
                 win.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
-                        let _ = win_clone.hide();
+                        commands::hide_palette(&focus_handle, "focus-lost");
                     }
                 });
             }
@@ -229,7 +274,7 @@ pub fn run() {
                 let state: tauri::State<'_, AppState> = app.state();
                 state.settings.update(|s| s.has_seen_welcome = true);
             } else if startup_settings.notify_on_startup {
-                status::notify_startup(&app.handle(), &startup_settings.global_hotkey);
+                status::notify_startup(&app.handle(), &startup_settings.active_hotkey());
             }
 
             Ok(())
@@ -254,7 +299,12 @@ pub fn run() {
             commands::set_show_after_alt_pick,
             commands::set_language,
             commands::set_global_hotkey,
+            commands::set_hotkey_enabled,
             commands::show_palette_at_cursor,
+            commands::show_shield,
+            commands::dismiss_palette,
+            commands::debug_enabled,
+            commands::debug_log,
             commands::start_qr_scan,
             commands::stop_qr_scan,
         ])

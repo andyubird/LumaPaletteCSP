@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Luma Palette</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        cursor: default;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // Transparent, non-activating window that covers every monitor while the
+      // palette is open. A press anywhere outside the palette lands here, which
+      // dismisses the palette instead of painting on CSP's canvas. Works for
+      // pen as well as mouse, which a low-level mouse hook could not block.
+      const { invoke } = window.__TAURI__.core;
+      let debugTrace = false;
+      invoke("debug_enabled").then((v) => { debugTrace = !!v; }).catch(() => {});
+      window.addEventListener(
+        "pointerdown",
+        (e) => {
+          e.preventDefault();
+          if (debugTrace) invoke("debug_log", { msg: `shield pointerdown ${e.pointerType}` }).catch(() => {});
+          invoke("dismiss_palette").catch(() => {});
+        },
+        { capture: true },
+      );
+      window.addEventListener("contextmenu", (e) => e.preventDefault());
+    </script>
+  </body>
+</html>

@@ -13,7 +13,13 @@ const wheelCanvas = document.getElementById("wheel");
 let wheel = createWheel(wheelCanvas, "oklch");
 const slider = new SliderRenderer(document.getElementById("slider"));
 const info = document.getElementById("info");
+const swatch = document.getElementById("swatch");
 const gamutBtn = document.getElementById("gamut-btn");
+const paletteRoot = document.getElementById("palette");
+
+// Opt-in trace (LUMA_DEBUG_LOG env var); see src-tauri/src/diag.rs.
+let debugTrace = false;
+const dlog = (msg) => { if (debugTrace) invoke("debug_log", { msg }).catch(() => {}); };
 
 let currentHex = "#808080";
 let currentL = 0.65;
@@ -30,6 +36,7 @@ const EDGE_GAP = 30;
 function setColor(hex, { sync = true, markerAt = null } = {}) {
   currentHex = hex;
   wheel.setCurrentColor(hex, markerAt);
+  swatch.style.background = hex;
   infoMode = { kind: "color" };
   updateInfoBar(info, hex, currentSlot, language);
   if (sync) {
@@ -96,17 +103,33 @@ function sendColorThrottled(hex) {
   if (performance.now() - lastCspSend >= 500) sendColorNow(hex);
 }
 
+// A pen reports pointermove far faster than the screen refreshes; rebuilding
+// the wheel image per event would queue up behind itself. Coalesce to one
+// rebuild per frame — the marker, center dot and slider still update
+// immediately on every event.
+let wheelRenderQueued = false;
+function scheduleWheelRender() {
+  if (wheelRenderQueued) return;
+  wheelRenderQueued = true;
+  requestAnimationFrame(() => {
+    wheelRenderQueued = false;
+    renderWheel();
+  });
+}
+
 function setLightness(L) {
   currentL = L;
   const selectedPoint = wheel.getSelectedPoint();
   const hex = wheel.colorAtAxis(L);
   setColor(hex, { sync: false, markerAt: selectedPoint });
-  renderWheel();
+  scheduleWheelRender();
   slider.render(L);
   return hex;
 }
 
 async function showPaletteAt(x, y, r, g, b, slot) {
+  dlog(`showPaletteAt start x=${x} y=${y}`);
+  paletteRoot.classList.remove("open");
   if (slot != null) currentSlot = slot;
   if (r != null && g != null && b != null) {
     const hex = rgbToHex(r / 255, g / 255, b / 255);
@@ -144,22 +167,43 @@ async function showPaletteAt(x, y, r, g, b, slot) {
   wx = clampWindowAxis(wx, pw, bounds.left, bounds.right);
   wy = clampWindowAxis(wy, ph, bounds.top, bounds.bottom);
 
+  // Grow out of the corner nearest the summon point (after any edge flips).
+  const originX = x <= wx ? "left" : x >= wx + pw ? "right" : "center";
+  const originY = y <= wy ? "top" : y >= wy + ph ? "bottom" : "center";
+  paletteRoot.style.transformOrigin = `${originX} ${originY}`;
+
   await win.setPosition(new PhysicalPosition(wx, wy));
+  // Shield first (it orders itself under the palette), then the palette. No
+  // setFocus(): explicitly activating the window while the shortcut key was
+  // still held made Windows drop that key's release from the hook (shortcut
+  // then jammed every other press). show() alone activates when Windows
+  // allows it; Escape is handled by the hook because it may not.
+  await invoke("show_shield").catch((e) => console.warn("show_shield:", e));
+  dlog("shield shown; showing palette");
   await win.show();
-  await win.setFocus();
+  paletteRoot.classList.add("open");
+  dlog(`palette shown + .open; visible=${await win.isVisible()}`);
 }
 
+// Open state is reset by Rust's `palette-hidden` event (see bootstrap).
+
+// The size only changes when the content or the target monitor's scale does;
+// skipping the resize round trips otherwise keeps opening snappy.
+let appliedSizeKey = null;
 async function resizePaletteForMonitor(win, monitor) {
   const measured = measurePaletteLogicalSize(
     document.querySelector(".topbar"),
     document.querySelector(".container"),
   );
-  const logicalSize = new LogicalSize(measured.width, measured.height);
-  await win.setSize(logicalSize);
-  await nextFrame();
-  await win.setSize(logicalSize);
-
   const scaleFactor = monitor?.scaleFactor || window.devicePixelRatio || 1;
+  const logicalSize = new LogicalSize(measured.width, measured.height);
+  const key = `${measured.width}x${measured.height}@${scaleFactor}`;
+  if (key !== appliedSizeKey) {
+    await win.setSize(logicalSize);
+    await nextFrame();
+    await win.setSize(logicalSize);
+    appliedSizeKey = key;
+  }
   return logicalSize.toPhysical(scaleFactor);
 }
 
@@ -228,6 +272,7 @@ function clampWindowAxis(pos, size, min, max) {
 }
 
 async function bootstrap() {
+  debugTrace = await invoke("debug_enabled").catch(() => false);
   renderWheel();
   slider.render(currentL);
   setColor(currentHex, { sync: false });
@@ -255,6 +300,11 @@ async function bootstrap() {
   listen("show-palette", (evt) => {
     const { x, y, r, g, b, slot } = evt.payload;
     showPaletteAt(x, y, r, g, b, slot);
+  });
+
+  listen("palette-hidden", () => {
+    dlog("palette-hidden event -> remove .open");
+    paletteRoot.classList.remove("open");
   });
 
   listen("qr-scan-status", (evt) => {

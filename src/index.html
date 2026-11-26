@@ -8,13 +8,19 @@
     <script type="module" src="main.js" defer></script>
   </head>
   <body>
-    <div class="topbar">
-      <div id="info"></div>
-      <button id="gamut-btn" title="Toggle gamut warning">&#9888;</button>
-    </div>
-    <div class="container">
-      <canvas id="wheel"></canvas>
-      <canvas id="slider"></canvas>
+    <div id="palette">
+      <div class="topbar">
+        <span id="swatch" aria-hidden="true"></span>
+        <div id="info"></div>
+        <button id="gamut-btn" title="Toggle gamut warning">&#9888;</button>
+      </div>
+      <div class="container">
+        <div class="wheel-stack">
+          <canvas id="wheel"></canvas>
+          <canvas id="wheel-overlay" data-wheel-overlay aria-hidden="true"></canvas>
+        </div>
+        <canvas id="slider"></canvas>
+      </div>
     </div>
   </body>
 </html>
