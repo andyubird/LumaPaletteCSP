@@ -96,12 +96,26 @@ function sendColorThrottled(hex) {
   if (performance.now() - lastCspSend >= 500) sendColorNow(hex);
 }
 
+// A pen reports pointermove far faster than the screen refreshes; rebuilding
+// the wheel image per event would queue up behind itself. Coalesce to one
+// rebuild per frame — the marker, center dot and slider still update
+// immediately on every event.
+let wheelRenderQueued = false;
+function scheduleWheelRender() {
+  if (wheelRenderQueued) return;
+  wheelRenderQueued = true;
+  requestAnimationFrame(() => {
+    wheelRenderQueued = false;
+    renderWheel();
+  });
+}
+
 function setLightness(L) {
   currentL = L;
   const selectedPoint = wheel.getSelectedPoint();
   const hex = wheel.colorAtAxis(L);
   setColor(hex, { sync: false, markerAt: selectedPoint });
-  renderWheel();
+  scheduleWheelRender();
   slider.render(L);
   return hex;
 }

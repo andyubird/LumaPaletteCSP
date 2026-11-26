@@ -1,6 +1,9 @@
 import {
   oklch2rgb,
+  oklabToLinear,
+  lin2s,
   gamutClamp,
+  inGamut,
   rgb2oklch,
   MAX_CHROMA,
   rgbToHex,
@@ -129,35 +132,103 @@ function pointForLab(a, b) {
 
 // -------- OKLCH wheel --------
 
-function renderOklchImage(L, gamutWarning) {
+// Pixel geometry (hue, chroma, inside-the-disc) never changes between renders;
+// compute it once instead of a sqrt + atan2 per pixel per frame.
+let oklchGeometry = null;
+function getOklchGeometry() {
+  if (oklchGeometry) return oklchGeometry;
   const size = WHEEL_RADIUS * 2;
+  const count = size * size;
+  const hue = new Float32Array(count);
+  const chroma = new Float32Array(count);
+  const cosH = new Float32Array(count);
+  const sinH = new Float32Array(count);
+  const inside = new Uint8Array(count);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const p = y * size + x;
+      const [, , dist, angle] = polar(x, y);
+      if (dist > WHEEL_RADIUS - 1) continue;
+      inside[p] = 1;
+      const h = ((150 - angle) % 360 + 360) % 360;
+      hue[p] = h;
+      chroma[p] = (dist / WHEEL_RADIUS) * MAX_CHROMA;
+      const rad = (h * Math.PI) / 180;
+      cosH[p] = Math.cos(rad);
+      sinH[p] = Math.sin(rad);
+    }
+  }
+  oklchGeometry = { size, hue, chroma, cosH, sinH, inside };
+  return oklchGeometry;
+}
+
+// Linear→sRGB transfer through an interpolated lookup table. Math.pow per
+// channel per pixel was most of what remained of the per-frame cost; 4096
+// steps with linear interpolation stays well under one 8-bit level of error.
+const LIN2S_STEPS = 4096;
+const LIN2S_LUT = new Float32Array(LIN2S_STEPS + 2);
+for (let i = 0; i < LIN2S_LUT.length; i++) {
+  LIN2S_LUT[i] = lin2s(Math.min(i / LIN2S_STEPS, 1));
+}
+function lin2sFast(c) {
+  if (c <= 0) return 0;
+  if (c >= 1) return 1;
+  const t = c * LIN2S_STEPS;
+  const i = t | 0;
+  return LIN2S_LUT[i] + (LIN2S_LUT[i + 1] - LIN2S_LUT[i]) * (t - i);
+}
+
+// Along a fixed-hue ray at fixed L the in-gamut chromas form one interval
+// [0, Cmax] — the same monotonicity gamutClamp's binary search relies on. So
+// search once per hue bin instead of once per out-of-gamut pixel: 1441
+// searches per frame rather than tens of thousands. 0.25° bins are finer than
+// the ~0.4° a rim pixel subtends; values are interpolated between bins.
+const OKLCH_HUE_BINS = 1440;
+function maxChromaByHue(L) {
+  const out = new Float32Array(OKLCH_HUE_BINS + 1);
+  for (let i = 0; i <= OKLCH_HUE_BINS; i++) {
+    const h = (i / OKLCH_HUE_BINS) * 360;
+    let lo = 0;
+    let hi = MAX_CHROMA;
+    if (inGamut(...oklch2rgb(L, hi, h))) {
+      out[i] = hi;
+      continue;
+    }
+    for (let k = 0; k < 20; k++) {
+      const mid = (lo + hi) / 2;
+      if (inGamut(...oklch2rgb(L, mid, h))) lo = mid;
+      else hi = mid;
+    }
+    out[i] = lo;
+  }
+  return out;
+}
+
+function renderOklchImage(L, gamutWarning) {
+  const { size, hue, chroma, cosH, sinH, inside } = getOklchGeometry();
+  const cmax = maxChromaByHue(L);
+  const binScale = OKLCH_HUE_BINS / 360;
   const img = new ImageData(size, size);
   const d = img.data;
 
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const [, , dist, angle] = polar(x, y);
-      if (dist > WHEEL_RADIUS - 1) {
-        putBg(d, i);
-        continue;
-      }
-      const hue = ((150 - angle) % 360 + 360) % 360;
-      const chroma = (dist / WHEEL_RADIUS) * MAX_CHROMA;
-      const [r0, g0, b0] = oklch2rgb(L, chroma, hue);
-      const fits =
-        r0 >= -0.002 && r0 <= 1.002 &&
-        g0 >= -0.002 && g0 <= 1.002 &&
-        b0 >= -0.002 && b0 <= 1.002;
-      if (!fits && gamutWarning) {
+  for (let p = 0, i = 0; p < size * size; p++, i += 4) {
+    if (!inside[p]) {
+      putBg(d, i);
+      continue;
+    }
+    const hb = hue[p] * binScale;
+    const b0 = hb | 0;
+    const limit = cmax[b0] + (cmax[b0 + 1] - cmax[b0]) * (hb - b0);
+    let c = chroma[p];
+    if (c > limit) {
+      if (gamutWarning) {
         d[i] = 80; d[i + 1] = 80; d[i + 2] = 82; d[i + 3] = 255;
         continue;
       }
-      let r, g, b;
-      if (fits) { r = r0; g = g0; b = b0; }
-      else [r, g, b] = gamutClamp(L, chroma, hue);
-      putPx(d, i, r, g, b);
+      c = limit;
     }
+    const [lr, lg, lb] = oklabToLinear(L, c * cosH[p], c * sinH[p]);
+    putPx(d, i, lin2sFast(lr), lin2sFast(lg), lin2sFast(lb));
   }
   return img;
 }

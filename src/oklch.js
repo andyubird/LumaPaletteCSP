@@ -51,7 +51,7 @@ export function rgb2oklch(r, g, b) {
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 
-function inGamut(r, g, b) {
+export function inGamut(r, g, b) {
   return r >= -0.002 && r <= 1.002 && g >= -0.002 && g <= 1.002 && b >= -0.002 && b <= 1.002;
 }
 
