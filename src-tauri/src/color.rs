@@ -48,9 +48,44 @@ pub fn rgb_to_hsv(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     (h, s, v)
 }
 
+/// HLS -> RGB, matching Python's colorsys.hls_to_rgb (CSP's "HLS" color
+/// circle model). h in [0,1), l,s in [0,1].
+pub fn hls_to_rgb(h: f64, l: f64, s: f64) -> (f64, f64, f64) {
+    if s <= 0.0 {
+        return (l, l, l);
+    }
+    let m2 = if l <= 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let m1 = 2.0 * l - m2;
+    let channel = |hue: f64| -> f64 {
+        let hue = hue.rem_euclid(1.0);
+        if hue < 1.0 / 6.0 {
+            m1 + (m2 - m1) * hue * 6.0
+        } else if hue < 0.5 {
+            m2
+        } else if hue < 2.0 / 3.0 {
+            m1 + (m2 - m1) * (2.0 / 3.0 - hue) * 6.0
+        } else {
+            m1
+        }
+    };
+    (channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hls_primaries_and_grey() {
+        let (r, g, b) = hls_to_rgb(0.0, 0.5, 1.0);
+        assert!(close(r, 1.0) && close(g, 0.0) && close(b, 0.0));
+        let (r, g, b) = hls_to_rgb(1.0 / 3.0, 0.5, 1.0);
+        assert!(close(r, 0.0) && close(g, 1.0) && close(b, 0.0));
+        let (r, g, b) = hls_to_rgb(2.0 / 3.0, 0.5, 1.0);
+        assert!(close(r, 0.0) && close(g, 0.0) && close(b, 1.0));
+        let (r, g, b) = hls_to_rgb(0.3, 0.25, 0.0);
+        assert!(close(r, 0.25) && close(g, 0.25) && close(b, 0.25));
+    }
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6

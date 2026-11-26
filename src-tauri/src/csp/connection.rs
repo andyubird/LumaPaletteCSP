@@ -7,7 +7,23 @@ use serde_json::json;
 use super::crypto::{make_new_password, obfuscate_auth, RECONNECT_MARKER};
 use super::framing::{build_message, drain_messages, MsgType, ParsedMessage, MAX_U32};
 use super::session::{save_session, SessionData};
-use crate::color::{hsv_to_rgb, rgb_to_hsv};
+use crate::color::{hls_to_rgb, hsv_to_rgb, rgb_to_hsv};
+
+/// Color models CSP's color circle can be in. Sync replies name their fields
+/// `{Model}Color{Main|Sub}{Component}`; HSV and HLS are observed, RGB follows
+/// the same pattern but is unverified.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ColorModel {
+    Hsv = 0,
+    Hls = 1,
+    Rgb = 2,
+}
+
+const COLOR_MODELS: [(ColorModel, &str, [&str; 3]); 3] = [
+    (ColorModel::Hsv, "HSV", ["H", "S", "V"]),
+    (ColorModel::Hls, "HLS", ["H", "L", "S"]),
+    (ColorModel::Rgb, "RGB", ["R", "G", "B"]),
+];
 
 pub struct CSPConnection {
     pub host: String,
@@ -24,12 +40,16 @@ pub struct CSPConnection {
     /// 0 = main (foreground), 1 = sub (background). Tracks which slot CSP
     /// currently has selected so writes target the right one.
     current_color_index: u8,
-    /// Raw u32-scaled H/S/V per slot (0 = main, 1 = sub) as last reported or
-    /// declared. CSP's Sync replies are diffs: a field it omits is unchanged
-    /// from what it believes this client already knows, so replies are merged
-    /// into this instead of being discarded when a field is missing.
-    known_hsv: [[u64; 3]; 2],
-    known_valid: [bool; 2],
+    /// Raw u32-scaled components per slot (0 = main, 1 = sub) and per color
+    /// model, as last reported or declared. CSP's Sync replies are diffs: a
+    /// field it omits is unchanged from what it believes this client already
+    /// knows, so replies are merged here instead of being discarded when a
+    /// field is missing. Kept per model because CSP diffs in the model its
+    /// circle is in, regardless of the model we last wrote in.
+    known: [[[u64; 3]; 3]; 2],
+    known_valid: [[bool; 3]; 2],
+    /// Model of the most recent fields received for each slot.
+    slot_model: [Option<ColorModel>; 2],
     /// Last color handed to the frontend, so pollers only emit real changes.
     last_emitted_rgb: Option<(u8, u8, u8)>,
     /// When we last wrote a color to CSP; pollers back off briefly after a
@@ -51,8 +71,9 @@ impl CSPConnection {
             connected: false,
             last_rgb: None,
             current_color_index: 0,
-            known_hsv: [[0; 3]; 2],
-            known_valid: [false; 2],
+            known: [[[0; 3]; 3]; 2],
+            known_valid: [[false; 3]; 2],
+            slot_model: [None; 2],
             last_emitted_rgb: None,
             last_set_at: None,
         }
@@ -194,34 +215,44 @@ impl CSPConnection {
             self.current_color_index = idx.min(1) as u8;
         }
 
-        // Merge whatever fields this message carries. The legacy
-        // HSVColorH/S/V names (no Main/Sub) refer to the selected slot.
+        // Merge whatever fields this message carries, per model and slot.
         let mut any = false;
-        for (slot, prefix) in [(0usize, "Main"), (1usize, "Sub")] {
-            let mut present = [false; 3];
-            for (i, axis) in ["H", "S", "V"].iter().enumerate() {
-                if let Some(v) = d.get(format!("HSVColor{prefix}{axis}")).and_then(|x| x.as_u64()) {
-                    self.known_hsv[slot][i] = v;
-                    present[i] = true;
+        for (model, name, axes) in COLOR_MODELS {
+            for (slot, prefix) in [(0usize, "Main"), (1usize, "Sub")] {
+                let mut present = [false; 3];
+                for (i, axis) in axes.iter().enumerate() {
+                    let key = format!("{name}Color{prefix}{axis}");
+                    if let Some(v) = d.get(&key).and_then(|x| x.as_u64()) {
+                        self.known[slot][model as usize][i] = v;
+                        present[i] = true;
+                    }
+                }
+                if present.iter().any(|p| *p) {
                     any = true;
+                    self.slot_model[slot] = Some(model);
+                    if present.iter().all(|p| *p) {
+                        self.known_valid[slot][model as usize] = true;
+                    }
                 }
             }
-            if present.iter().all(|p| *p) {
-                self.known_valid[slot] = true;
-            }
         }
+        // Legacy HSVColorH/S/V names (no Main/Sub) refer to the selected slot.
         if !any {
             let slot = self.current_color_index as usize;
+            let m = ColorModel::Hsv as usize;
             let mut present = [false; 3];
             for (i, axis) in ["H", "S", "V"].iter().enumerate() {
                 if let Some(v) = d.get(format!("HSVColor{axis}")).and_then(|x| x.as_u64()) {
-                    self.known_hsv[slot][i] = v;
+                    self.known[slot][m][i] = v;
                     present[i] = true;
-                    any = true;
                 }
             }
-            if present.iter().all(|p| *p) {
-                self.known_valid[slot] = true;
+            if present.iter().any(|p| *p) {
+                any = true;
+                self.slot_model[slot] = Some(ColorModel::Hsv);
+                if present.iter().all(|p| *p) {
+                    self.known_valid[slot][m] = true;
+                }
             }
         }
         if any {
@@ -229,19 +260,28 @@ impl CSPConnection {
         }
     }
 
-    /// Recompute `last_rgb` from the selected slot's known H/S/V.
+    /// Recompute `last_rgb` from the selected slot's most recently reported
+    /// model, once a full set of that model's components is known.
     fn refresh_last_rgb(&mut self) {
         let slot = self.current_color_index as usize;
-        if !self.known_valid[slot] {
+        let Some(model) = self.slot_model[slot] else {
+            return;
+        };
+        if !self.known_valid[slot][model as usize] {
             return;
         }
-        let [h, s, v] = self.known_hsv[slot];
-        // u32 scale: H -> [0,1), S/V -> [0,1]
-        let (r, g, b) = hsv_to_rgb(h as f64 / MAX_U32, s as f64 / MAX_U32, v as f64 / MAX_U32);
+        let [a, b, c] = self.known[slot][model as usize];
+        // u32 scale -> [0,1]; hue wraps at 1.
+        let (a, b, c) = (a as f64 / MAX_U32, b as f64 / MAX_U32, c as f64 / MAX_U32);
+        let (r, g, bl) = match model {
+            ColorModel::Hsv => hsv_to_rgb(a, b, c),
+            ColorModel::Hls => hls_to_rgb(a, b, c),
+            ColorModel::Rgb => (a, b, c),
+        };
         self.last_rgb = Some((
             (r * 255.0).round().clamp(0.0, 255.0) as u8,
             (g * 255.0).round().clamp(0.0, 255.0) as u8,
-            (b * 255.0).round().clamp(0.0, 255.0) as u8,
+            (bl * 255.0).round().clamp(0.0, 255.0) as u8,
         ));
     }
 
@@ -254,9 +294,11 @@ impl CSPConnection {
             .map(|m| m.detail.to_string())
             .unwrap_or_else(|| "<no response>".into());
         let detail: String = detail.chars().take(400).collect();
+        let slot = self.current_color_index as usize;
+        let known = self.slot_model[slot].map(|m| (m, self.known[slot][m as usize]));
         crate::diag::log(format!(
-            "csp {what}: slot={} rgb={:?} known={:?} detail={detail}",
-            self.current_color_index, self.last_rgb, self.known_hsv
+            "csp {what}: slot={slot} rgb={:?} known={known:?} detail={detail}",
+            self.last_rgb
         ));
     }
 
@@ -268,8 +310,11 @@ impl CSPConnection {
     /// so the declaration is written into `known_hsv` before the reply merges.
     pub fn get_color_rgb(&mut self) -> Option<(u8, u8, u8)> {
         let stale = r#"{"IsManipulating":false,"HSVColorMainH":0,"HSVColorMainS":0,"HSVColorMainV":0,"CurrentColorIndex":0,"ColorSelectionModel":"HSV"}"#;
-        self.known_hsv[0] = [0; 3];
-        self.known_valid[0] = true;
+        self.known[0][ColorModel::Hsv as usize] = [0; 3];
+        self.known_valid[0][ColorModel::Hsv as usize] = true;
+        if self.slot_model[0].is_none() {
+            self.slot_model[0] = Some(ColorModel::Hsv);
+        }
         let resp = self.send_command("SyncColorCircleUIState", stale);
         self.refresh_last_rgb();
         self.trace_sync("sync(full)", &resp);
@@ -324,9 +369,13 @@ impl CSPConnection {
         self.last_emitted_rgb = Some(rgb8);
         self.last_set_at = Some(Instant::now());
         let (h, s, v) = rgb_to_hsv(r, g, b);
+        // Record what we wrote in HSV terms only; CSP keeps diffing in its own
+        // circle model against what it last sent us, so the other models'
+        // known values stay as they were.
         let slot = self.current_color_index as usize;
-        self.known_hsv[slot] = [(h * MAX_U32) as u64, (s * MAX_U32) as u64, (v * MAX_U32) as u64];
-        self.known_valid[slot] = true;
+        let m = ColorModel::Hsv as usize;
+        self.known[slot][m] = [(h * MAX_U32) as u64, (s * MAX_U32) as u64, (v * MAX_U32) as u64];
+        self.known_valid[slot][m] = true;
         let detail = json!({
             "ColorSpaceKind": "HSV",
             "IsColorTransparent": false,
