@@ -14,6 +14,7 @@ let wheel = createWheel(wheelCanvas, "oklch");
 const slider = new SliderRenderer(document.getElementById("slider"));
 const info = document.getElementById("info");
 const gamutBtn = document.getElementById("gamut-btn");
+const paletteRoot = document.getElementById("palette");
 
 let currentHex = "#808080";
 let currentL = 0.65;
@@ -121,6 +122,7 @@ function setLightness(L) {
 }
 
 async function showPaletteAt(x, y, r, g, b, slot) {
+  paletteRoot.classList.remove("open");
   if (slot != null) currentSlot = slot;
   if (r != null && g != null && b != null) {
     const hex = rgbToHex(r / 255, g / 255, b / 255);
@@ -158,22 +160,38 @@ async function showPaletteAt(x, y, r, g, b, slot) {
   wx = clampWindowAxis(wx, pw, bounds.left, bounds.right);
   wy = clampWindowAxis(wy, ph, bounds.top, bounds.bottom);
 
+  // Grow out of the corner nearest the summon point (after any edge flips).
+  const originX = x <= wx ? "left" : x >= wx + pw ? "right" : "center";
+  const originY = y <= wy ? "top" : y >= wy + ph ? "bottom" : "center";
+  paletteRoot.style.transformOrigin = `${originX} ${originY}`;
+
   await win.setPosition(new PhysicalPosition(wx, wy));
   await win.show();
+  paletteRoot.classList.add("open");
   await win.setFocus();
 }
 
+// Rust hides the window on focus loss; reset the open state so the next
+// show animates again.
+window.addEventListener("blur", () => paletteRoot.classList.remove("open"));
+
+// The size only changes when the content or the target monitor's scale does;
+// skipping the resize round trips otherwise keeps opening snappy.
+let appliedSizeKey = null;
 async function resizePaletteForMonitor(win, monitor) {
   const measured = measurePaletteLogicalSize(
     document.querySelector(".topbar"),
     document.querySelector(".container"),
   );
-  const logicalSize = new LogicalSize(measured.width, measured.height);
-  await win.setSize(logicalSize);
-  await nextFrame();
-  await win.setSize(logicalSize);
-
   const scaleFactor = monitor?.scaleFactor || window.devicePixelRatio || 1;
+  const logicalSize = new LogicalSize(measured.width, measured.height);
+  const key = `${measured.width}x${measured.height}@${scaleFactor}`;
+  if (key !== appliedSizeKey) {
+    await win.setSize(logicalSize);
+    await nextFrame();
+    await win.setSize(logicalSize);
+    appliedSizeKey = key;
+  }
   return logicalSize.toPhysical(scaleFactor);
 }
 

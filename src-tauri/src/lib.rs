@@ -71,7 +71,7 @@ pub fn run() {
                 },
                 move || {
                     let (x, y) = get_cursor_pos();
-                    commands::sample_and_show(&shortcut_action_handle, x, y);
+                    commands::sample_and_show(&shortcut_action_handle, x, y, 0);
                 },
             );
 
@@ -87,7 +87,7 @@ pub fn run() {
             app.listen("tray-show-palette", move |_| {
                 // Tray left-click → sample at last known cursor via OS.
                 let (x, y) = get_cursor_pos();
-                commands::sample_and_show(&show_handle, x, y);
+                commands::sample_and_show(&show_handle, x, y, 0);
             });
 
             let rescan_handle = app.handle().clone();

@@ -291,26 +291,32 @@ pub struct ShowPalettePayload {
     pub slot: Option<u8>,
 }
 
+/// How long to wait after an ALT+click before sampling, so CSP's built-in
+/// eyedropper has committed the new brush color. Only the ALT+click path needs
+/// this; every other trigger passes 0 so the palette opens immediately.
+pub const ALT_PICK_SETTLE_MS: u64 = 180;
+
 /// Sample current CSP color, then tell the frontend to show the palette at (x, y).
-/// Called by the ALT+click hook and the tray left-click.
+/// Called by the ALT+click hook, the global shortcut, and the tray left-click.
 ///
-/// Sampling runs on a background thread with a short delay so CSP's built-in
-/// ALT+click eyedropper has time to commit the new brush color before we read
-/// it. We only emit `show-palette` after the sample lands — this way the
-/// frontend positions the marker for the correct color *before* the window
-/// appears, avoiding the visible "jump" of the marker circle.
-pub fn sample_and_show(app: &AppHandle, x: i32, y: i32) {
+/// Sampling runs on a background thread, after `delay_ms` (see
+/// `ALT_PICK_SETTLE_MS`). We only emit `show-palette` after the sample lands —
+/// this way the frontend positions the marker for the correct color *before*
+/// the window appears, avoiding the visible "jump" of the marker circle.
+pub fn sample_and_show(app: &AppHandle, x: i32, y: i32, delay_ms: u64) {
     if RESTRICT_TO_CSP.load(Ordering::Relaxed) && !input_hook::is_csp_foreground() {
         return;
     }
 
-    sample_and_show_unrestricted(app, x, y);
+    sample_and_show_unrestricted(app, x, y, delay_ms);
 }
 
-fn sample_and_show_unrestricted(app: &AppHandle, x: i32, y: i32) {
+fn sample_and_show_unrestricted(app: &AppHandle, x: i32, y: i32, delay_ms: u64) {
     let app_bg = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(180));
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
         let state: State<'_, AppState> = app_bg.state();
         let (rgb, slot_idx) = {
             let mut slot = state.csp.lock().unwrap();
@@ -338,13 +344,13 @@ pub fn sample_after_alt_pick(app: &AppHandle, x: i32, y: i32) {
     if !state.settings.get().show_after_alt_pick {
         return;
     }
-    sample_and_show(app, x, y);
+    sample_and_show(app, x, y, ALT_PICK_SETTLE_MS);
 }
 
 #[tauri::command]
 pub fn show_palette_at_cursor(app: AppHandle) {
     let (x, y) = get_cursor_pos();
-    sample_and_show_unrestricted(&app, x, y);
+    sample_and_show_unrestricted(&app, x, y, 0);
 }
 
 #[tauri::command]
