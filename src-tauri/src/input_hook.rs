@@ -16,6 +16,10 @@ pub fn set_palette_visible(visible: bool) {
     PALETTE_VISIBLE.store(visible, Ordering::Relaxed);
 }
 
+pub fn palette_visible() -> bool {
+    PALETTE_VISIBLE.load(Ordering::Relaxed)
+}
+
 /// Called whenever the palette hides. A hide is proof the user isn't holding
 /// the shortcut, so this bounds the damage if the hook ever misses a keyup
 /// (measured: activating the palette with SetForegroundWindow while the key

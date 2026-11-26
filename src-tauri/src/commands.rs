@@ -201,7 +201,7 @@ pub struct ColorUpdate {
     pub slot: u8,
 }
 
-fn emit_color(app: &AppHandle, rgb: (u8, u8, u8), slot: u8) {
+pub fn emit_color(app: &AppHandle, rgb: (u8, u8, u8), slot: u8) {
     let _ = app.emit(
         "color-update",
         ColorUpdate {

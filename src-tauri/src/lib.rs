@@ -170,6 +170,7 @@ pub fn run() {
             thread::spawn(move || loop {
                 thread::sleep(Duration::from_secs(3));
                 let state: tauri::State<'_, AppState> = hb_handle.state();
+                let mut change = None;
                 let dropped = {
                     let mut slot = state.csp.lock().unwrap();
                     if let Some(conn) = slot.as_mut() {
@@ -178,12 +179,18 @@ pub fn run() {
                             *slot = None;
                             true
                         } else {
+                            // Anything CSP buffered since the last read was
+                            // absorbed while waiting for the heartbeat reply.
+                            change = conn.take_color_change();
                             false
                         }
                     } else {
                         false
                     }
                 };
+                if let Some((rgb, idx)) = change {
+                    commands::emit_color(&hb_handle, rgb, idx);
+                }
                 if dropped {
                     let _ = hb_handle.emit(
                         "connection-status",
@@ -195,6 +202,35 @@ pub fn run() {
                     status::set(&hb_handle, Phase::Disconnected("socket dropped".into()));
                     let scan_state: tauri::State<'_, AppState> = hb_handle.state();
                     commands::start_qr_scan(hb_handle.clone(), scan_state);
+                }
+            });
+
+            // Color poll — CSP has no push channel (PROTOCOL.md: Sync* is the
+            // only read API), so while the palette is visible ask it a few
+            // times a second and forward changes. Backs off right after our
+            // own writes so a read-back can't fight a drag in progress.
+            let poll_handle = app.handle().clone();
+            thread::spawn(move || loop {
+                thread::sleep(Duration::from_millis(250));
+                if !input_hook::palette_visible() {
+                    continue;
+                }
+                let state: tauri::State<'_, AppState> = poll_handle.state();
+                let change = {
+                    let mut slot = state.csp.lock().unwrap();
+                    match slot.as_mut() {
+                        Some(conn)
+                            if conn.connected
+                                && !conn.recently_set(Duration::from_millis(700)) =>
+                        {
+                            conn.poll_color();
+                            conn.take_color_change()
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some((rgb, idx)) = change {
+                    commands::emit_color(&poll_handle, rgb, idx);
                 }
             });
 

@@ -50,7 +50,8 @@ The split is deliberate: **Rust owns all CSP connection state; the JS frontend o
 Main (Tauri event loop) never blocks on I/O. Work that can block or that runs periodically lives on dedicated threads:
 
 - **CSP socket I/O** — all goes through `CSPConnection` behind `AppState.csp: Mutex<_>`. Commands and heartbeat both acquire the lock.
-- **Heartbeat** — 3s loop; also detects dropped sockets and triggers `start_qr_scan`.
+- **Heartbeat** — 3s loop; also detects dropped sockets and triggers `start_qr_scan`, and forwards any color change CSP buffered since the last read.
+- **Color poll** — 250ms loop, active only while the palette is visible: `SyncColorCircleUIState` with an empty declaration (CSP replies with just what changed), merged into `known_hsv`, emitted as `color-update` when it differs by more than ±2/channel from what the frontend last got. Skipped for 700ms after any write so it never fights a drag. CSP has no push channel; `Sync*` request/response is the only read API (PROTOCOL.md).
 - **CSP process watcher** — polls `sysinfo` and posts a single bool via callback; drives connect/disconnect transitions.
 - **QR scan** — one thread per active scan; owned by `AppState.qr_scan` so a new scan replaces the old one.
 - **ALT+click hook** — Windows low-level hook thread; forwards `(x, y)` into `sample_and_show` which itself spawns a short-lived thread for the 180ms sample delay.

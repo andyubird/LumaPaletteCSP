@@ -24,6 +24,17 @@ pub struct CSPConnection {
     /// 0 = main (foreground), 1 = sub (background). Tracks which slot CSP
     /// currently has selected so writes target the right one.
     current_color_index: u8,
+    /// Raw u32-scaled H/S/V per slot (0 = main, 1 = sub) as last reported or
+    /// declared. CSP's Sync replies are diffs: a field it omits is unchanged
+    /// from what it believes this client already knows, so replies are merged
+    /// into this instead of being discarded when a field is missing.
+    known_hsv: [[u64; 3]; 2],
+    known_valid: [bool; 2],
+    /// Last color handed to the frontend, so pollers only emit real changes.
+    last_emitted_rgb: Option<(u8, u8, u8)>,
+    /// When we last wrote a color to CSP; pollers back off briefly after a
+    /// write so a read-back can't fight an in-progress drag.
+    last_set_at: Option<Instant>,
 }
 
 impl CSPConnection {
@@ -40,6 +51,10 @@ impl CSPConnection {
             connected: false,
             last_rgb: None,
             current_color_index: 0,
+            known_hsv: [[0; 3]; 2],
+            known_valid: [false; 2],
+            last_emitted_rgb: None,
+            last_set_at: None,
         }
     }
 
@@ -178,34 +193,51 @@ impl CSPConnection {
         if let Some(idx) = d.get("CurrentColorIndex").and_then(|x| x.as_u64()) {
             self.current_color_index = idx.min(1) as u8;
         }
-        // Prefer the currently-selected slot's HSV when both Main and Sub are
-        // present. Fall back to the legacy HSVColorH/S/V for older payloads.
-        let slot_prefix = if self.current_color_index == 1 { "Sub" } else { "Main" };
-        let (hk, sk, vk) = (
-            format!("HSVColor{slot_prefix}H"),
-            format!("HSVColor{slot_prefix}S"),
-            format!("HSVColor{slot_prefix}V"),
-        );
-        let (h, s, v) = if let (Some(h), Some(s), Some(v)) = (
-            d.get(&hk).and_then(|x| x.as_u64()),
-            d.get(&sk).and_then(|x| x.as_u64()),
-            d.get(&vk).and_then(|x| x.as_u64()),
-        ) {
-            (h as f64, s as f64, v as f64)
-        } else if let (Some(h), Some(s), Some(v)) = (
-            d.get("HSVColorH").and_then(|x| x.as_u64()),
-            d.get("HSVColorS").and_then(|x| x.as_u64()),
-            d.get("HSVColorV").and_then(|x| x.as_u64()),
-        ) {
-            (h as f64, s as f64, v as f64)
-        } else {
+
+        // Merge whatever fields this message carries. The legacy
+        // HSVColorH/S/V names (no Main/Sub) refer to the selected slot.
+        let mut any = false;
+        for (slot, prefix) in [(0usize, "Main"), (1usize, "Sub")] {
+            let mut present = [false; 3];
+            for (i, axis) in ["H", "S", "V"].iter().enumerate() {
+                if let Some(v) = d.get(format!("HSVColor{prefix}{axis}")).and_then(|x| x.as_u64()) {
+                    self.known_hsv[slot][i] = v;
+                    present[i] = true;
+                    any = true;
+                }
+            }
+            if present.iter().all(|p| *p) {
+                self.known_valid[slot] = true;
+            }
+        }
+        if !any {
+            let slot = self.current_color_index as usize;
+            let mut present = [false; 3];
+            for (i, axis) in ["H", "S", "V"].iter().enumerate() {
+                if let Some(v) = d.get(format!("HSVColor{axis}")).and_then(|x| x.as_u64()) {
+                    self.known_hsv[slot][i] = v;
+                    present[i] = true;
+                    any = true;
+                }
+            }
+            if present.iter().all(|p| *p) {
+                self.known_valid[slot] = true;
+            }
+        }
+        if any {
+            self.refresh_last_rgb();
+        }
+    }
+
+    /// Recompute `last_rgb` from the selected slot's known H/S/V.
+    fn refresh_last_rgb(&mut self) {
+        let slot = self.current_color_index as usize;
+        if !self.known_valid[slot] {
             return;
-        };
+        }
+        let [h, s, v] = self.known_hsv[slot];
         // u32 scale: H -> [0,1), S/V -> [0,1]
-        let hn = h / MAX_U32;
-        let sn = s / MAX_U32;
-        let vn = v / MAX_U32;
-        let (r, g, b) = hsv_to_rgb(hn, sn, vn);
+        let (r, g, b) = hsv_to_rgb(h as f64 / MAX_U32, s as f64 / MAX_U32, v as f64 / MAX_U32);
         self.last_rgb = Some((
             (r * 255.0).round().clamp(0.0, 255.0) as u8,
             (g * 255.0).round().clamp(0.0, 255.0) as u8,
@@ -213,11 +245,69 @@ impl CSPConnection {
         ));
     }
 
+    fn trace_sync(&self, what: &str, resp: &Option<ParsedMessage>) {
+        if !crate::diag::enabled() {
+            return;
+        }
+        let detail = resp
+            .as_ref()
+            .map(|m| m.detail.to_string())
+            .unwrap_or_else(|| "<no response>".into());
+        let detail: String = detail.chars().take(400).collect();
+        crate::diag::log(format!(
+            "csp {what}: slot={} rgb={:?} known={:?} detail={detail}",
+            self.current_color_index, self.last_rgb, self.known_hsv
+        ));
+    }
+
+    /// Full read of CSP's current color, used when the palette opens.
+    ///
+    /// Stale-state trick from PROTOCOL.md: declaring main = (0,0,0) makes CSP
+    /// reply with every main field that differs from that, i.e. a full payload
+    /// unless a component really is 0 — in which case the declared 0 is right,
+    /// so the declaration is written into `known_hsv` before the reply merges.
     pub fn get_color_rgb(&mut self) -> Option<(u8, u8, u8)> {
-        // Stale-state trick from PROTOCOL.md so server returns full detail.
         let stale = r#"{"IsManipulating":false,"HSVColorMainH":0,"HSVColorMainS":0,"HSVColorMainV":0,"CurrentColorIndex":0,"ColorSelectionModel":"HSV"}"#;
-        let _ = self.send_command("SyncColorCircleUIState", stale);
+        self.known_hsv[0] = [0; 3];
+        self.known_valid[0] = true;
+        let resp = self.send_command("SyncColorCircleUIState", stale);
+        self.refresh_last_rgb();
+        self.trace_sync("sync(full)", &resp);
         self.last_rgb
+    }
+
+    /// Cheap incremental read for polling while the palette is open: an empty
+    /// declaration makes CSP reply with only what changed since the last sync.
+    pub fn poll_color(&mut self) {
+        let before = self.last_rgb;
+        let resp = self.send_command("SyncColorCircleUIState", "{}");
+        if self.last_rgb != before {
+            self.trace_sync("sync(poll) changed", &resp);
+        }
+    }
+
+    /// The color to hand to the frontend if it differs from what it last got.
+    /// Ignores ±2 per channel so CSP's HSV round-trip of our own writes
+    /// doesn't nudge the marker.
+    pub fn take_color_change(&mut self) -> Option<((u8, u8, u8), u8)> {
+        let rgb = self.last_rgb?;
+        let differs = match self.last_emitted_rgb {
+            None => true,
+            Some(prev) => {
+                (rgb.0 as i16 - prev.0 as i16).abs() > 2
+                    || (rgb.1 as i16 - prev.1 as i16).abs() > 2
+                    || (rgb.2 as i16 - prev.2 as i16).abs() > 2
+            }
+        };
+        if !differs {
+            return None;
+        }
+        self.last_emitted_rgb = Some(rgb);
+        Some((rgb, self.current_color_index))
+    }
+
+    pub fn recently_set(&self, within: Duration) -> bool {
+        self.last_set_at.map(|t| t.elapsed() < within).unwrap_or(false)
     }
 
     pub fn set_color_hex(&mut self, hex: &str) -> Option<ParsedMessage> {
@@ -228,12 +318,15 @@ impl CSPConnection {
         let r = u8::from_str_radix(&hx[0..2], 16).ok()? as f64 / 255.0;
         let g = u8::from_str_radix(&hx[2..4], 16).ok()? as f64 / 255.0;
         let b = u8::from_str_radix(&hx[4..6], 16).ok()? as f64 / 255.0;
-        self.last_rgb = Some((
-            (r * 255.0) as u8,
-            (g * 255.0) as u8,
-            (b * 255.0) as u8,
-        ));
+        let rgb8 = ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+        self.last_rgb = Some(rgb8);
+        // The frontend already shows what it just sent.
+        self.last_emitted_rgb = Some(rgb8);
+        self.last_set_at = Some(Instant::now());
         let (h, s, v) = rgb_to_hsv(r, g, b);
+        let slot = self.current_color_index as usize;
+        self.known_hsv[slot] = [(h * MAX_U32) as u64, (s * MAX_U32) as u64, (v * MAX_U32) as u64];
+        self.known_valid[slot] = true;
         let detail = json!({
             "ColorSpaceKind": "HSV",
             "IsColorTransparent": false,
