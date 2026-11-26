@@ -82,7 +82,10 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> AppSnapshot {
 
 /// Hide the palette and its click shield together and tell the frontend, so
 /// it can reset the open animation for the next show.
-pub fn hide_palette(app: &AppHandle) {
+pub fn hide_palette(app: &AppHandle, reason: &str) {
+    crate::diag::log(format!("hide_palette ({reason})"));
+    input_hook::set_palette_visible(false);
+    input_hook::rearm_shortcut();
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
@@ -94,17 +97,51 @@ pub fn hide_palette(app: &AppHandle) {
 
 #[tauri::command]
 pub fn dismiss_palette(app: AppHandle) {
-    hide_palette(&app);
+    hide_palette(&app, "shield-dismiss");
+}
+
+#[tauri::command]
+pub fn debug_enabled() -> bool {
+    crate::diag::enabled()
+}
+
+#[tauri::command]
+pub fn debug_log(msg: String) {
+    crate::diag::log(format!("js {msg}"));
 }
 
 /// Cover every monitor with the transparent, non-activating shield window so a
 /// press outside the palette dismisses it instead of reaching CSP's canvas.
 /// The frontend calls this just before showing the palette on top of it.
+///
+/// The palette is never explicitly activated (see main.js) and may stay
+/// unfocused, so nothing orders the two windows implicitly: the z-order is set
+/// here explicitly, palette at the top of the topmost band and the shield
+/// directly beneath it.
 #[tauri::command]
 pub fn show_shield(app: AppHandle) {
+    crate::diag::log("show_shield");
+    input_hook::set_palette_visible(true);
     let Some(shield) = app.get_webview_window("shield") else {
         return;
     };
+    #[cfg(target_os = "windows")]
+    if let (Ok(shield_hwnd), Some(Ok(palette_hwnd))) = (
+        shield.hwnd(),
+        app.get_webview_window("main").map(|w| w.hwnd()),
+    ) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        let palette = HWND(palette_hwnd.0 as *mut core::ffi::c_void);
+        let shield_h = HWND(shield_hwnd.0 as *mut core::ffi::c_void);
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        unsafe {
+            let _ = SetWindowPos(palette, HWND_TOPMOST, 0, 0, 0, 0, flags);
+            let _ = SetWindowPos(shield_h, palette, 0, 0, 0, 0, flags);
+        }
+    }
     if let Ok(monitors) = app.available_monitors() {
         let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
         for m in &monitors {
@@ -349,8 +386,10 @@ pub const ALT_PICK_SETTLE_MS: u64 = 180;
 /// the window appears, avoiding the visible "jump" of the marker circle.
 pub fn sample_and_show(app: &AppHandle, x: i32, y: i32, delay_ms: u64) {
     if RESTRICT_TO_CSP.load(Ordering::Relaxed) && !input_hook::is_csp_foreground() {
+        crate::diag::log("sample_and_show blocked: CSP not foreground");
         return;
     }
+    crate::diag::log(format!("sample_and_show x={x} y={y} delay={delay_ms}"));
 
     sample_and_show_unrestricted(app, x, y, delay_ms);
 }
@@ -369,6 +408,7 @@ fn sample_and_show_unrestricted(app: &AppHandle, x: i32, y: i32, delay_ms: u64) 
                 None => (None, None),
             }
         };
+        crate::diag::log("emit show-palette");
         let _ = app_bg.emit(
             "show-palette",
             ShowPalettePayload {

@@ -24,10 +24,13 @@
       // dismisses the palette instead of painting on CSP's canvas. Works for
       // pen as well as mouse, which a low-level mouse hook could not block.
       const { invoke } = window.__TAURI__.core;
+      let debugTrace = false;
+      invoke("debug_enabled").then((v) => { debugTrace = !!v; }).catch(() => {});
       window.addEventListener(
         "pointerdown",
         (e) => {
           e.preventDefault();
+          if (debugTrace) invoke("debug_log", { msg: `shield pointerdown ${e.pointerType}` }).catch(() => {});
           invoke("dismiss_palette").catch(() => {});
         },
         { capture: true },

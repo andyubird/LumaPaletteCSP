@@ -16,6 +16,10 @@ const info = document.getElementById("info");
 const gamutBtn = document.getElementById("gamut-btn");
 const paletteRoot = document.getElementById("palette");
 
+// Opt-in trace (LUMA_DEBUG_LOG env var); see src-tauri/src/diag.rs.
+let debugTrace = false;
+const dlog = (msg) => { if (debugTrace) invoke("debug_log", { msg }).catch(() => {}); };
+
 let currentHex = "#808080";
 let currentL = 0.65;
 let lastCspSend = 0;
@@ -122,6 +126,7 @@ function setLightness(L) {
 }
 
 async function showPaletteAt(x, y, r, g, b, slot) {
+  dlog(`showPaletteAt start x=${x} y=${y}`);
   paletteRoot.classList.remove("open");
   if (slot != null) currentSlot = slot;
   if (r != null && g != null && b != null) {
@@ -166,19 +171,19 @@ async function showPaletteAt(x, y, r, g, b, slot) {
   paletteRoot.style.transformOrigin = `${originX} ${originY}`;
 
   await win.setPosition(new PhysicalPosition(wx, wy));
-  // Shield first so it sits under the palette and catches outside presses.
+  // Shield first (it orders itself under the palette), then the palette. No
+  // setFocus(): explicitly activating the window while the shortcut key was
+  // still held made Windows drop that key's release from the hook (shortcut
+  // then jammed every other press). show() alone activates when Windows
+  // allows it; Escape is handled by the hook because it may not.
   await invoke("show_shield").catch((e) => console.warn("show_shield:", e));
+  dlog("shield shown; showing palette");
   await win.show();
   paletteRoot.classList.add("open");
-  await win.setFocus();
+  dlog(`palette shown + .open; visible=${await win.isVisible()}`);
 }
 
-// Open state is reset by Rust's `palette-hidden` event (see bootstrap), not by
-// DOM blur: forcing foreground on Windows can bounce focus for a moment after
-// show(), and a blur-driven reset then left the window shown at opacity 0.
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") invoke("dismiss_palette").catch(() => {});
-});
+// Open state is reset by Rust's `palette-hidden` event (see bootstrap).
 
 // The size only changes when the content or the target monitor's scale does;
 // skipping the resize round trips otherwise keeps opening snappy.
@@ -265,6 +270,7 @@ function clampWindowAxis(pos, size, min, max) {
 }
 
 async function bootstrap() {
+  debugTrace = await invoke("debug_enabled").catch(() => false);
   renderWheel();
   slider.render(currentL);
   setColor(currentHex, { sync: false });
@@ -294,7 +300,10 @@ async function bootstrap() {
     showPaletteAt(x, y, r, g, b, slot);
   });
 
-  listen("palette-hidden", () => paletteRoot.classList.remove("open"));
+  listen("palette-hidden", () => {
+    dlog("palette-hidden event -> remove .open");
+    paletteRoot.classList.remove("open");
+  });
 
   listen("qr-scan-status", (evt) => {
     const { scanning, message } = evt.payload;

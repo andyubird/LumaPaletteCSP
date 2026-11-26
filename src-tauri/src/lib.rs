@@ -1,5 +1,6 @@
 pub mod color;
 pub mod commands;
+mod diag;
 pub mod csp;
 pub mod csp_process;
 pub mod input_hook;
@@ -64,6 +65,7 @@ pub fn run() {
 
             let shortcut_settings_handle = app.handle().clone();
             let shortcut_action_handle = app.handle().clone();
+            let escape_handle = app.handle().clone();
             input_hook::install_shortcut(
                 move || {
                     let state: tauri::State<'_, AppState> = shortcut_settings_handle.state();
@@ -72,6 +74,11 @@ pub fn run() {
                 move || {
                     let (x, y) = get_cursor_pos();
                     commands::sample_and_show(&shortcut_action_handle, x, y, 0);
+                },
+                move || {
+                    // Off the hook thread: window calls must not stall it.
+                    let handle = escape_handle.clone();
+                    thread::spawn(move || commands::hide_palette(&handle, "escape"));
                 },
             );
 
@@ -209,7 +216,7 @@ pub fn run() {
                 let focus_handle = app.handle().clone();
                 win.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
-                        commands::hide_palette(&focus_handle);
+                        commands::hide_palette(&focus_handle, "focus-lost");
                     }
                 });
             }
@@ -260,6 +267,8 @@ pub fn run() {
             commands::show_palette_at_cursor,
             commands::show_shield,
             commands::dismiss_palette,
+            commands::debug_enabled,
+            commands::debug_log,
             commands::start_qr_scan,
             commands::stop_qr_scan,
         ])

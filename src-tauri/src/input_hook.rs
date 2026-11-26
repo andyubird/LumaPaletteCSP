@@ -1,5 +1,28 @@
 // Windows-only low-level hooks for ALT+click and the user shortcut. Hooks pass
-// events through to Windows; they should never consume typing in other apps.
+// events through to Windows; they never consume typing in other apps. The one
+// exception is Escape while the palette is open, which dismisses it.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether the palette is currently shown. The palette window is non-activating
+/// (keyboard focus stays with CSP), so Escape-to-dismiss has to be handled here
+/// in the hook rather than in the palette's own JS.
+static PALETTE_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// Shortcut auto-repeat latch: drops on keydown, returns on keyup.
+static ARMED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_palette_visible(visible: bool) {
+    PALETTE_VISIBLE.store(visible, Ordering::Relaxed);
+}
+
+/// Called whenever the palette hides. A hide is proof the user isn't holding
+/// the shortcut, so this bounds the damage if the hook ever misses a keyup
+/// (measured: activating the palette with SetForegroundWindow while the key
+/// was held made Windows skip our hook for that key's release).
+pub fn rearm_shortcut() {
+    ARMED.store(true, Ordering::Relaxed);
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ShortcutSpec {
@@ -175,16 +198,17 @@ where
 }
 
 #[cfg(target_os = "windows")]
-pub fn install_shortcut<G, F>(get_shortcut: G, on_shortcut: F)
+pub fn install_shortcut<G, F, E>(get_shortcut: G, on_shortcut: F, on_escape: E)
 where
     G: Fn() -> String + Send + Sync + 'static,
     F: Fn() + Send + Sync + 'static,
+    E: Fn() + Send + Sync + 'static,
 {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
     use std::sync::OnceLock;
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
@@ -193,11 +217,10 @@ where
 
     static GET_SHORTCUT: OnceLock<Box<dyn Fn() -> String + Send + Sync>> = OnceLock::new();
     static CALLBACK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+    static ON_ESCAPE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
     // ARMED drops on keydown and returns on keyup so auto-repeat fires once.
-    // If the keyup never reaches us (another low-level hook can swallow it),
-    // a keydown later than Windows' slowest repeat delay counts as a new press
-    // instead of leaving the shortcut jammed.
-    static ARMED: AtomicBool = AtomicBool::new(true);
+    // If the keyup never reaches us, a keydown later than Windows' slowest
+    // repeat delay counts as a new press instead of leaving the shortcut jammed.
     static LAST_DOWN_MS: AtomicU64 = AtomicU64::new(0);
     const REPEAT_WINDOW_MS: u64 = 1100;
 
@@ -210,6 +233,7 @@ where
 
     let _ = GET_SHORTCUT.set(Box::new(get_shortcut));
     let _ = CALLBACK.set(Box::new(on_shortcut));
+    let _ = ON_ESCAPE.set(Box::new(on_escape));
 
     fn current_spec() -> Option<ShortcutSpec> {
         let accel = GET_SHORTCUT.get()?();
@@ -228,22 +252,44 @@ where
         if code >= 0 {
             let msg = wparam.0 as u32;
             let info = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
+            let vk = info.vkCode as u16;
+            let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+            let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+            if crate::diag::enabled() {
+                crate::diag::log(format!("hook raw msg={msg:#x} vk={vk:#x} flags={:#x}", info.flags.0));
+            }
+
+            // Escape closes the open palette and is swallowed so the app under
+            // it doesn't act on it too.
+            if vk == VK_ESCAPE.0 && PALETTE_VISIBLE.load(Ordering::Relaxed) {
+                if is_down {
+                    crate::diag::log("hook escape -> dismiss");
+                    if let Some(cb) = ON_ESCAPE.get() {
+                        cb();
+                    }
+                }
+                if is_down || is_up {
+                    return LRESULT(1);
+                }
+            }
+
             if let Some(spec) = current_spec() {
-                let vk = info.vkCode as u16;
-                if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
-                    && vk == spec.vk_code
-                    && modifiers_match(&spec)
-                {
+                if is_down && vk == spec.vk_code && modifiers_match(&spec) {
                     let now = now_ms();
                     let prev = LAST_DOWN_MS.swap(now, Ordering::Relaxed);
                     let was_armed = ARMED.swap(false, Ordering::Relaxed);
                     let is_repeat = !was_armed && now.saturating_sub(prev) < REPEAT_WINDOW_MS;
+                    crate::diag::log(format!(
+                        "hook keydown vk={vk:#x} armed={was_armed} since_prev={}ms repeat={is_repeat}",
+                        now.saturating_sub(prev)
+                    ));
                     if !is_repeat {
                         if let Some(cb) = CALLBACK.get() {
                             cb();
                         }
                     }
-                } else if (msg == WM_KEYUP || msg == WM_SYSKEYUP) && vk == spec.vk_code {
+                } else if is_up && vk == spec.vk_code {
+                    crate::diag::log(format!("hook keyup vk={vk:#x} -> armed"));
                     ARMED.store(true, Ordering::Relaxed);
                 }
             }
@@ -257,6 +303,7 @@ where
             eprintln!("[HOOK] SetWindowsHookExW for shortcut failed");
             return;
         }
+        crate::diag::log("keyboard hook installed");
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             // Pump messages; the hook fires via the OS.
@@ -282,10 +329,11 @@ where
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn install_shortcut<G, F>(_get_shortcut: G, _on_shortcut: F)
+pub fn install_shortcut<G, F, E>(_get_shortcut: G, _on_shortcut: F, _on_escape: E)
 where
     G: Fn() -> String + Send + Sync + 'static,
     F: Fn() + Send + Sync + 'static,
+    E: Fn() + Send + Sync + 'static,
 {
     eprintln!("[HOOK] shortcut hook not implemented on this platform yet.");
 }
