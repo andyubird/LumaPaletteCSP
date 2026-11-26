@@ -100,24 +100,16 @@ function polar(x, y) {
   return [dx, dy, dist, angle];
 }
 
-// Draw center dot + marker for a wheel. `marker` is either
+// Draw the selection marker for a wheel. `marker` is either
 // { distPx, screenAngleRad } (derived from the current color) or
 // { x, y } (explicit pixel coords, used during drag so the marker tracks the
 // cursor exactly — matters for OKLCH where gamut-clamp shrinks chroma and the
-// derived position drifts inward from the rim).
-function drawOverlay(ctx, currentHex, marker) {
+// derived position drifts inward from the rim). The current color itself is
+// shown as the swatch in the top bar, not on the wheel.
+function drawOverlay(ctx, _currentHex, marker) {
+  if (!marker) return;
   const cx = WHEEL_RADIUS;
   const cy = WHEEL_RADIUS;
-
-  ctx.beginPath();
-  ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-  ctx.fillStyle = currentHex;
-  ctx.fill();
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  if (!marker) return;
   let mx, my;
   if (marker.x != null) {
     mx = marker.x;
@@ -126,10 +118,16 @@ function drawOverlay(ctx, currentHex, marker) {
     mx = cx + marker.distPx * Math.cos(marker.screenAngleRad);
     my = cy - marker.distPx * Math.sin(marker.screenAngleRad);
   }
+  // Thin white ring with a faint dark halo so it reads on light colors too.
+  ctx.beginPath();
+  ctx.arc(mx, my, 4.5, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
   ctx.beginPath();
   ctx.arc(mx, my, 4, 0, Math.PI * 2);
   ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1;
   ctx.stroke();
 }
 

@@ -13,6 +13,7 @@ const wheelCanvas = document.getElementById("wheel");
 let wheel = createWheel(wheelCanvas, "oklch");
 const slider = new SliderRenderer(document.getElementById("slider"));
 const info = document.getElementById("info");
+const swatch = document.getElementById("swatch");
 const gamutBtn = document.getElementById("gamut-btn");
 const paletteRoot = document.getElementById("palette");
 
@@ -35,6 +36,7 @@ const EDGE_GAP = 30;
 function setColor(hex, { sync = true, markerAt = null } = {}) {
   currentHex = hex;
   wheel.setCurrentColor(hex, markerAt);
+  swatch.style.background = hex;
   infoMode = { kind: "color" };
   updateInfoBar(info, hex, currentSlot, language);
   if (sync) {

@@ -61,6 +61,16 @@ body {
   gap: 4px;
 }
 
+/* Current color, moved out of the wheel so it doesn't cover it. */
+#swatch {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+  background: #808080;
+}
+
 #info {
   flex: 1;
   min-width: 0;
