@@ -200,32 +200,73 @@ small {
   line-height: 1.35;
 }
 
-#shortcut-value {
-  min-width: 120px;
-  padding: 7px 10px;
-  border: 1px solid #4a4e56;
-  border-radius: 6px;
+.shortcut-fields {
+  margin: 13px 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  transition: opacity 0.15s;
+}
+
+.shortcut-fields:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.key-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-field {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
   background: #1b1c20;
+  border-color: #4a4e56;
   color: #ffe1a6;
+  font-family: Consolas, "Cascadia Mono", monospace;
 }
 
-#capture-box {
-  margin-top: 10px;
-  padding: 10px;
-  border: 1px solid #8c6b34;
-  border-radius: 6px;
-  background: #211d18;
+.key-field:hover {
+  background: #22242a;
+  border-color: #5c616a;
 }
 
-#capture-box strong,
-#capture-box span {
-  display: block;
+.key-field .placeholder {
+  color: #8d887d;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-style: italic;
 }
 
-#capture-box span {
-  margin-top: 3px;
+.key-field.recording {
+  border-color: #e0a84a;
+  color: #ffe3a8;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  animation: recording-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(224, 168, 74, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(224, 168, 74, 0);
+  }
+}
+
+.hint {
+  margin: 10px 0 0;
   color: #aaa59a;
   font-size: 12px;
+  line-height: 1.4;
+}
+
+.hint strong {
+  color: #ffe1a6;
+  font-weight: 600;
 }
 
 .message {

@@ -67,7 +67,7 @@ pub fn run() {
             input_hook::install_shortcut(
                 move || {
                     let state: tauri::State<'_, AppState> = shortcut_settings_handle.state();
-                    state.settings.get().global_hotkey
+                    state.settings.get().active_hotkey()
                 },
                 move || {
                     let (x, y) = get_cursor_pos();
@@ -229,7 +229,7 @@ pub fn run() {
                 let state: tauri::State<'_, AppState> = app.state();
                 state.settings.update(|s| s.has_seen_welcome = true);
             } else if startup_settings.notify_on_startup {
-                status::notify_startup(&app.handle(), &startup_settings.global_hotkey);
+                status::notify_startup(&app.handle(), &startup_settings.active_hotkey());
             }
 
             Ok(())
@@ -254,6 +254,7 @@ pub fn run() {
             commands::set_show_after_alt_pick,
             commands::set_language,
             commands::set_global_hotkey,
+            commands::set_hotkey_enabled,
             commands::show_palette_at_cursor,
             commands::start_qr_scan,
             commands::stop_qr_scan,

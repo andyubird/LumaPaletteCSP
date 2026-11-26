@@ -14,11 +14,11 @@ const restrictToggle = document.getElementById("restrict-toggle");
 const wheelType = document.getElementById("wheel-type");
 const paletteOffset = document.getElementById("palette-offset");
 const shortcutEnabled = document.getElementById("shortcut-enabled");
-const shortcutValue = document.getElementById("shortcut-value");
-const recordShortcutBtn = document.getElementById("record-shortcut-btn");
+const shortcutFields = document.getElementById("shortcut-fields");
+const shortcutModifier = document.getElementById("shortcut-modifier");
+const shortcutKeyBtn = document.getElementById("shortcut-key");
 const clearShortcutBtn = document.getElementById("clear-shortcut-btn");
-const captureBox = document.getElementById("capture-box");
-const captureValue = document.getElementById("capture-value");
+const shortcutSummary = document.getElementById("shortcut-summary");
 const shortcutMessage = document.getElementById("shortcut-message");
 const closeBtn = document.getElementById("close-btn");
 
@@ -52,11 +52,16 @@ const I18N = {
     palettePosition: "Palette position",
     keyboardShortcut: "Keyboard shortcut",
     shortcutTitle: "Enable keyboard shortcut",
-    shortcutHelp: "Use one custom shortcut to show the palette at the cursor.",
-    recordShortcut: "Record shortcut",
+    shortcutHelp: "Show the palette at the cursor with a key of your choice.",
+    modifier: "Modifier",
+    modNone: "None",
+    key: "Key",
+    clickToSet: "Click to set",
+    pressKey: "Press a key… (Esc cancels)",
     clear: "Clear",
-    pressKeys: "Press keys...",
-    escCancels: "Esc cancels",
+    shortcutSummary: "Shortcut: {shortcut}",
+    setKeyHint: "Click the key box and press a key to finish setting up the shortcut.",
+    noModifierHint: "No modifier: the key still types into other apps. Turn on \"Only respond when CSP is focused\" above to keep it from triggering elsewhere.",
     storage: "Storage",
     settings: "Settings",
     pairing: "Pairing",
@@ -73,12 +78,12 @@ const I18N = {
     disconnectedReason: "Disconnected: {detail}",
     clearingConnected: "Disconnecting and clearing saved pairing...",
     clearing: "Clearing saved pairing...",
-    shortcutCanceled: "Shortcut recording canceled.",
+    shortcutCanceled: "Key recording canceled.",
     registering: "Registering shortcut...",
     shortcutSet: "Shortcut set to {shortcut}.",
-    pressAnother: "Press another shortcut...",
+    pressAnother: "Press another key…",
     shortcutDisabled: "Keyboard shortcut disabled.",
-    shortcutCleared: "Keyboard shortcut cleared.",
+    shortcutCleared: "Key cleared.",
     unavailable: "Unavailable",
     wheelOklch: "OKLCH (perceptual)",
     wheelHsv: "HSV (CSP native)",
@@ -114,11 +119,16 @@ const I18N = {
     palettePosition: "調色盤位置",
     keyboardShortcut: "鍵盤快捷鍵",
     shortcutTitle: "啟用鍵盤快捷鍵",
-    shortcutHelp: "使用一組自訂快捷鍵在游標旁顯示調色盤。",
-    recordShortcut: "錄製快捷鍵",
+    shortcutHelp: "按下自訂按鍵，在游標旁顯示調色盤。",
+    modifier: "修飾鍵",
+    modNone: "無",
+    key: "按鍵",
+    clickToSet: "點擊以設定",
+    pressKey: "請按一個按鍵…（Esc 取消）",
     clear: "清除",
-    pressKeys: "請按下按鍵...",
-    escCancels: "Esc 取消",
+    shortcutSummary: "快捷鍵：{shortcut}",
+    setKeyHint: "點擊按鍵欄位並按下一個按鍵，即可完成快捷鍵設定。",
+    noModifierHint: "未使用修飾鍵：該按鍵仍會輸入到其他程式。建議開啟上方的「只在 CSP 作用中時回應」，避免在其他程式中觸發。",
     storage: "儲存位置",
     settings: "設定",
     pairing: "配對",
@@ -135,12 +145,12 @@ const I18N = {
     disconnectedReason: "已中斷：{detail}",
     clearingConnected: "正在中斷並清除已儲存配對...",
     clearing: "正在清除已儲存配對...",
-    shortcutCanceled: "已取消錄製快捷鍵。",
+    shortcutCanceled: "已取消錄製按鍵。",
     registering: "正在設定快捷鍵...",
     shortcutSet: "快捷鍵已設定為 {shortcut}。",
-    pressAnother: "請按另一組快捷鍵...",
+    pressAnother: "請按另一個按鍵…",
     shortcutDisabled: "鍵盤快捷鍵已停用。",
-    shortcutCleared: "鍵盤快捷鍵已清除。",
+    shortcutCleared: "按鍵已清除。",
     unavailable: "無法取得",
     wheelOklch: "OKLCH（感知均勻）",
     wheelHsv: "HSV（CSP 原生）",
@@ -195,9 +205,10 @@ function applyLanguage() {
   setText("main section:nth-of-type(5) h2", "keyboardShortcut");
   setText("#shortcut-enabled + span strong", "shortcutTitle");
   setText("#shortcut-enabled + span small", "shortcutHelp");
-  recordShortcutBtn.textContent = t("recordShortcut");
+  setText("label[for='shortcut-modifier']", "modifier");
+  setOptionText("#shortcut-modifier option[value='']", "modNone");
+  setText("label[for='shortcut-key']", "key");
   clearShortcutBtn.textContent = t("clear");
-  document.querySelector("#capture-box span").textContent = t("escCancels");
   setText("main section:nth-of-type(6) h2", "storage");
   setText("dt:nth-of-type(1)", "settings");
   setText("dt:nth-of-type(2)", "pairing");
@@ -253,11 +264,50 @@ function renderSettings(settings) {
   restrictToggle.checked = !!settings.restrict_to_csp;
   wheelType.value = settings.wheel_type || "oklch";
   paletteOffset.value = settings.palette_offset || "bottom-right";
-  shortcutEnabled.checked = currentShortcut.length > 0;
-  shortcutValue.textContent = currentShortcut || t("off");
-  clearShortcutBtn.disabled = !currentShortcut;
   applyLanguage();
+  renderShortcut(!!settings.hotkey_enabled);
   renderScanAction(connected);
+}
+
+function renderShortcut(enabled) {
+  shortcutEnabled.checked = enabled;
+  shortcutFields.disabled = !enabled;
+  clearShortcutBtn.disabled = !currentShortcut;
+
+  const { mod, key } = splitShortcut(currentShortcut);
+  // Only mirror the dropdown from a saved shortcut; with none saved, keep the
+  // user's pending choice (default Ctrl) instead of resetting it on refresh.
+  if (currentShortcut) syncModifierDropdown(mod);
+
+  if (!captureActive) {
+    shortcutKeyBtn.classList.remove("recording");
+    if (key) {
+      shortcutKeyBtn.textContent = key;
+    } else {
+      shortcutKeyBtn.innerHTML = "";
+      const placeholder = document.createElement("span");
+      placeholder.className = "placeholder";
+      placeholder.textContent = t("clickToSet");
+      shortcutKeyBtn.appendChild(placeholder);
+    }
+  }
+
+  shortcutSummary.innerHTML = "";
+  if (!key) {
+    shortcutSummary.textContent = t("setKeyHint");
+  } else {
+    const line = document.createElement("div");
+    line.textContent = t("shortcutSummary", { shortcut: "" });
+    const strong = document.createElement("strong");
+    strong.textContent = currentShortcut;
+    line.appendChild(strong);
+    shortcutSummary.appendChild(line);
+    if (!mod) {
+      const warn = document.createElement("div");
+      warn.textContent = t("noModifierHint");
+      shortcutSummary.appendChild(warn);
+    }
+  }
 }
 
 function renderPortable(portable) {
@@ -279,36 +329,90 @@ async function refresh() {
   renderScanAction(snapshot.connected);
 }
 
-function accelFromEvent(e) {
-  const parts = [];
-  if (e.ctrlKey) parts.push("Ctrl");
-  if (e.shiftKey) parts.push("Shift");
-  if (e.altKey) parts.push("Alt");
-  if (e.metaKey) parts.push("Super");
+// US-layout shifted symbols → the unshifted key they live on, so holding Shift
+// while recording still stores the base key (the dropdown owns modifiers).
+const SHIFTED_SYMBOLS = {
+  "~": "`", "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\",
+  ":": ";", '"': "'", "<": ",", ">": ".", "?": "/",
+  "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+  "&": "7", "*": "8", "(": "9", ")": "0",
+};
 
+// The modifier comes from the dropdown; recording captures only the
+// non-modifier key.
+function keyFromEvent(e) {
   let key = e.key;
-  if (["Control", "Shift", "Alt", "Meta"].includes(key)) return null;
+  if (["Control", "Shift", "Alt", "Meta", "Dead", "Unidentified"].includes(key)) return null;
   if (key === " ") key = "Space";
   else if (/^F\d+$/.test(key)) { /* keep F1..F24 */ }
-  else if (key.length === 1) key = key.toUpperCase();
+  else if (key.length === 1) key = (SHIFTED_SYMBOLS[key] || key).toUpperCase();
   else key = key.charAt(0).toUpperCase() + key.slice(1);
-
-  parts.push(key);
-  return parts.join("+");
+  return key;
 }
 
+function composeAccel(mod, key) {
+  if (!key) return "";
+  return mod ? `${mod}+${key}` : key;
+}
+
+// Split an accelerator string into a canonical modifier combo and its key.
+function splitShortcut(accel) {
+  if (!accel) return { mod: "", key: "" };
+  const parts = accel.split("+").map((p) => p.trim()).filter(Boolean);
+  const key = parts.pop() || "";
+  const names = parts.map((p) => {
+    const l = p.toLowerCase();
+    if (l === "ctrl" || l === "control") return "Ctrl";
+    if (l === "meta" || l === "win" || l === "windows" || l === "super") return "Super";
+    return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+  });
+  const mod = ["Ctrl", "Shift", "Alt", "Super"].filter((m) => names.includes(m)).join("+");
+  return { mod, key };
+}
+
+// Select the modifier combo in the dropdown, adding an option for combos the
+// static list doesn't cover (e.g. Super, or shortcuts from older saves).
+function syncModifierDropdown(mod) {
+  if (![...shortcutModifier.options].some((o) => o.value === mod)) {
+    const opt = document.createElement("option");
+    opt.value = mod;
+    opt.textContent = mod;
+    shortcutModifier.insertBefore(opt, shortcutModifier.lastElementChild);
+  }
+  shortcutModifier.value = mod;
+}
+
+// Recording lives inside the key button: clicking it arms capture, and
+// anything that takes focus away (clicking elsewhere, unchecking, Clear,
+// switching windows) cancels. Esc cancels too.
 function startCapture() {
+  if (captureActive || shortcutFields.disabled) return;
   captureActive = true;
-  captureValue.textContent = t("pressKeys");
-  captureBox.hidden = false;
+  shortcutKeyBtn.classList.add("recording");
+  shortcutKeyBtn.textContent = t("pressKey");
   shortcutMessage.textContent = "";
+  shortcutKeyBtn.focus();
   document.addEventListener("keydown", onCaptureKey, true);
+  shortcutKeyBtn.addEventListener("blur", cancelCapture);
+  window.addEventListener("blur", cancelCapture);
 }
+
+let captureEndedAt = 0;
 
 function stopCapture() {
+  if (!captureActive) return;
   captureActive = false;
-  captureBox.hidden = true;
+  captureEndedAt = performance.now();
   document.removeEventListener("keydown", onCaptureKey, true);
+  shortcutKeyBtn.removeEventListener("blur", cancelCapture);
+  window.removeEventListener("blur", cancelCapture);
+  renderShortcut(shortcutEnabled.checked);
+}
+
+function cancelCapture() {
+  if (!captureActive) return;
+  stopCapture();
+  shortcutMessage.textContent = t("shortcutCanceled");
 }
 
 async function onCaptureKey(e) {
@@ -317,24 +421,25 @@ async function onCaptureKey(e) {
   e.stopPropagation();
 
   if (e.key === "Escape") {
-    shortcutMessage.textContent = t("shortcutCanceled");
-    stopCapture();
+    cancelCapture();
     return;
   }
 
-  const accel = accelFromEvent(e);
-  if (!accel) return;
+  const key = keyFromEvent(e);
+  if (!key) return;
+  const accel = composeAccel(shortcutModifier.value, key);
 
-  captureValue.textContent = accel;
+  shortcutKeyBtn.textContent = key;
   shortcutMessage.textContent = t("registering");
   try {
     await invoke("set_global_hotkey", { hotkey: accel });
-    shortcutMessage.textContent = t("shortcutSet", { shortcut: accel });
     stopCapture();
+    shortcutMessage.textContent = t("shortcutSet", { shortcut: accel });
     await refresh();
   } catch (err) {
     shortcutMessage.textContent = String(err);
-    captureValue.textContent = t("pressAnother");
+    shortcutKeyBtn.textContent = t("pressAnother");
+    shortcutKeyBtn.focus();
   }
 }
 
@@ -383,18 +488,40 @@ paletteOffset.addEventListener("change", async () => {
 });
 
 shortcutEnabled.addEventListener("change", async () => {
-  if (shortcutEnabled.checked) {
-    if (!currentShortcut) startCapture();
-    return;
-  }
-  await invoke("set_global_hotkey", { hotkey: "" });
-  shortcutMessage.textContent = t("shortcutDisabled");
+  const enabled = shortcutEnabled.checked;
+  if (!enabled) cancelCapture();
+  await invoke("set_hotkey_enabled", { enabled });
+  shortcutMessage.textContent = enabled ? "" : t("shortcutDisabled");
   await refresh();
+  // Enabling with no key yet: jump straight into recording so the next
+  // keypress finishes setup.
+  if (enabled && !currentShortcut) startCapture();
 });
 
-recordShortcutBtn.addEventListener("click", startCapture);
+shortcutKeyBtn.addEventListener("click", (e) => {
+  // Recording Space ends on keydown, but the keyup still "clicks" the focused
+  // button (detail 0 = keyboard-activated); don't let it restart recording.
+  if (e.detail === 0 && performance.now() - captureEndedAt < 300) return;
+  startCapture();
+});
+
+shortcutModifier.addEventListener("change", async () => {
+  const { key } = splitShortcut(currentShortcut);
+  if (!key) return; // no key recorded yet; combo applies once one is set
+  const accel = composeAccel(shortcutModifier.value, key);
+  shortcutMessage.textContent = t("registering");
+  try {
+    await invoke("set_global_hotkey", { hotkey: accel });
+    shortcutMessage.textContent = t("shortcutSet", { shortcut: accel });
+    await refresh();
+  } catch (err) {
+    shortcutMessage.textContent = String(err);
+    syncModifierDropdown(splitShortcut(currentShortcut).mod);
+  }
+});
 
 clearShortcutBtn.addEventListener("click", async () => {
+  cancelCapture();
   await invoke("set_global_hotkey", { hotkey: "" });
   shortcutMessage.textContent = t("shortcutCleared");
   await refresh();
@@ -406,11 +533,10 @@ closeBtn.addEventListener("click", () => {
 
 listen("phase-changed", (evt) => renderPhase(evt.payload));
 listen("settings-changed", (evt) => renderSettings(evt.payload));
-listen("global-hotkey-changed", (evt) => {
-  currentShortcut = evt.payload || "";
-  shortcutEnabled.checked = currentShortcut.length > 0;
-  shortcutValue.textContent = currentShortcut || t("off");
-  clearShortcutBtn.disabled = !currentShortcut;
+listen("global-hotkey-changed", () => {
+  refresh().catch((err) => {
+    shortcutMessage.textContent = String(err);
+  });
 });
 listen("qr-scan-status", async (evt) => {
   try {

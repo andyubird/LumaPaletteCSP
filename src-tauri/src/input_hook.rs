@@ -42,10 +42,7 @@ fn parse_shortcut(accel: &str) -> Result<Option<ShortcutSpec>, String> {
     }
 
     if !key_seen {
-        return Err("Press a non-modifier key too, such as Alt+P.".into());
-    }
-    if !(spec.ctrl || spec.shift || spec.alt || spec.super_key) {
-        return Err("Use at least one modifier, such as Ctrl, Alt, Shift, or Super.".into());
+        return Err("Pick a non-modifier key, such as P or 1.".into());
     }
 
     Ok(Some(spec))
@@ -57,10 +54,14 @@ pub fn validate_shortcut(accel: &str) -> Result<(), String> {
 
 fn vk_code_for_key(raw: &str) -> Result<u16, String> {
     let key = raw.trim();
-    if key.len() == 1 {
-        let ch = key.chars().next().unwrap().to_ascii_uppercase();
-        if ch.is_ascii_alphabetic() || ch.is_ascii_digit() {
-            return Ok(ch as u16);
+    if key.chars().count() == 1 {
+        let ch = key.chars().next().unwrap();
+        let upper = ch.to_ascii_uppercase();
+        if upper.is_ascii_alphabetic() || upper.is_ascii_digit() {
+            return Ok(upper as u16);
+        }
+        if let Some(vk) = oem_vk_for_char(ch) {
+            return Ok(vk);
         }
     }
 
@@ -89,8 +90,39 @@ fn vk_code_for_key(raw: &str) -> Result<u16, String> {
         "ARROWDOWN" | "DOWN" => Ok(0x28),
         "INSERT" => Ok(0x2D),
         "DELETE" => Ok(0x2E),
-        _ => Err("Use a letter, number, function key, arrow key, or navigation key.".into()),
+        _ => Err("Use a letter, number, symbol, function key, arrow key, or navigation key.".into()),
     }
+}
+
+/// Virtual-key code for a punctuation character such as '`' or '-'. On Windows
+/// this asks the active keyboard layout, so the physical key matches what the
+/// user actually pressed; the table below is the US-layout fallback.
+fn oem_vk_for_char(ch: char) -> Option<u16> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
+        let mut buf = [0u16; 2];
+        if let [unit] = ch.encode_utf16(&mut buf) {
+            let scan = unsafe { VkKeyScanW(*unit) };
+            if scan != -1 {
+                return Some((scan as u16) & 0xFF);
+            }
+        }
+    }
+    Some(match ch {
+        '`' | '~' => 0xC0,
+        '-' | '_' => 0xBD,
+        '=' | '+' => 0xBB,
+        '[' | '{' => 0xDB,
+        ']' | '}' => 0xDD,
+        '\\' | '|' => 0xDC,
+        ';' | ':' => 0xBA,
+        '\'' | '"' => 0xDE,
+        ',' | '<' => 0xBC,
+        '.' | '>' => 0xBE,
+        '/' | '?' => 0xBF,
+        _ => return None,
+    })
 }
 
 #[cfg(target_os = "windows")]

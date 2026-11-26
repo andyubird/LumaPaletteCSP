@@ -96,15 +96,30 @@
             <small>Use one custom shortcut to show the palette at the cursor.</small>
           </span>
         </label>
-        <div class="shortcut-row">
-          <span id="shortcut-value">Off</span>
-          <button id="record-shortcut-btn">Record shortcut</button>
-          <button id="clear-shortcut-btn">Clear</button>
-        </div>
-        <div id="capture-box" hidden>
-          <strong id="capture-value">Press keys...</strong>
-          <span>Esc cancels</span>
-        </div>
+        <fieldset id="shortcut-fields" class="shortcut-fields" disabled>
+          <div class="field-row">
+            <label for="shortcut-modifier">Modifier</label>
+            <select id="shortcut-modifier">
+              <option value="Ctrl" selected>Ctrl</option>
+              <option value="Shift">Shift</option>
+              <option value="Alt">Alt</option>
+              <option value="Ctrl+Shift">Ctrl+Shift</option>
+              <option value="Ctrl+Alt">Ctrl+Alt</option>
+              <option value="Shift+Alt">Shift+Alt</option>
+              <option value="">None</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label for="shortcut-key">Key</label>
+            <div class="key-controls">
+              <button type="button" id="shortcut-key" class="key-field">
+                <span class="placeholder">Click to set</span>
+              </button>
+              <button type="button" id="clear-shortcut-btn">Clear</button>
+            </div>
+          </div>
+          <p class="hint" id="shortcut-summary"></p>
+        </fieldset>
         <p class="message" id="shortcut-message"></p>
       </section>
 

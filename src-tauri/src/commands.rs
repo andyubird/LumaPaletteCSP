@@ -412,6 +412,14 @@ pub fn set_global_hotkey(
     Ok(())
 }
 
+#[tauri::command]
+pub fn set_hotkey_enabled(app: AppHandle, state: State<'_, AppState>, enabled: bool) {
+    state.settings.update(|s| s.hotkey_enabled = enabled);
+    let settings = state.settings.get();
+    let _ = app.emit("global-hotkey-changed", settings.active_hotkey());
+    let _ = app.emit("settings-changed", settings);
+}
+
 fn emit_scan_status(app: &AppHandle, scanning: bool, message: Option<&str>) {
     #[derive(Serialize, Clone)]
     struct ScanStatus<'a> {
