@@ -202,12 +202,14 @@ pub fn run() {
                 });
             }
 
-            // Hide the main window when it loses focus (click-outside-to-dismiss).
+            // Hide the palette (and its click shield) when it loses focus, e.g.
+            // on Alt+Tab. Ordinary click-outside dismissal goes through the
+            // shield window's `dismiss_palette` instead.
             if let Some(win) = app.get_webview_window("main") {
-                let win_clone = win.clone();
+                let focus_handle = app.handle().clone();
                 win.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
-                        let _ = win_clone.hide();
+                        commands::hide_palette(&focus_handle);
                     }
                 });
             }
@@ -256,6 +258,8 @@ pub fn run() {
             commands::set_global_hotkey,
             commands::set_hotkey_enabled,
             commands::show_palette_at_cursor,
+            commands::show_shield,
+            commands::dismiss_palette,
             commands::start_qr_scan,
             commands::stop_qr_scan,
         ])

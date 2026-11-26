@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
+use tauri::{PhysicalPosition, PhysicalSize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::csp::crypto::decode_qr_url;
@@ -77,6 +78,49 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> AppSnapshot {
         csp_running: csp_process::is_running(),
         connected,
     }
+}
+
+/// Hide the palette and its click shield together and tell the frontend, so
+/// it can reset the open animation for the next show.
+pub fn hide_palette(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    if let Some(shield) = app.get_webview_window("shield") {
+        let _ = shield.hide();
+    }
+    let _ = app.emit("palette-hidden", ());
+}
+
+#[tauri::command]
+pub fn dismiss_palette(app: AppHandle) {
+    hide_palette(&app);
+}
+
+/// Cover every monitor with the transparent, non-activating shield window so a
+/// press outside the palette dismisses it instead of reaching CSP's canvas.
+/// The frontend calls this just before showing the palette on top of it.
+#[tauri::command]
+pub fn show_shield(app: AppHandle) {
+    let Some(shield) = app.get_webview_window("shield") else {
+        return;
+    };
+    if let Ok(monitors) = app.available_monitors() {
+        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for m in &monitors {
+            let p = m.position();
+            let s = m.size();
+            left = left.min(p.x);
+            top = top.min(p.y);
+            right = right.max(p.x + s.width as i32);
+            bottom = bottom.max(p.y + s.height as i32);
+        }
+        if left < right && top < bottom {
+            let _ = shield.set_position(PhysicalPosition::new(left, top));
+            let _ = shield.set_size(PhysicalSize::new((right - left) as u32, (bottom - top) as u32));
+        }
+    }
+    let _ = shield.show();
 }
 
 pub fn show_status_settings(app: &AppHandle) {

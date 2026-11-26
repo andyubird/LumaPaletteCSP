@@ -180,7 +180,7 @@ where
     G: Fn() -> String + Send + Sync + 'static,
     F: Fn() + Send + Sync + 'static,
 {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::OnceLock;
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -193,7 +193,20 @@ where
 
     static GET_SHORTCUT: OnceLock<Box<dyn Fn() -> String + Send + Sync>> = OnceLock::new();
     static CALLBACK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+    // ARMED drops on keydown and returns on keyup so auto-repeat fires once.
+    // If the keyup never reaches us (another low-level hook can swallow it),
+    // a keydown later than Windows' slowest repeat delay counts as a new press
+    // instead of leaving the shortcut jammed.
     static ARMED: AtomicBool = AtomicBool::new(true);
+    static LAST_DOWN_MS: AtomicU64 = AtomicU64::new(0);
+    const REPEAT_WINDOW_MS: u64 = 1100;
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
 
     let _ = GET_SHORTCUT.set(Box::new(get_shortcut));
     let _ = CALLBACK.set(Box::new(on_shortcut));
@@ -221,7 +234,11 @@ where
                     && vk == spec.vk_code
                     && modifiers_match(&spec)
                 {
-                    if ARMED.swap(false, Ordering::Relaxed) {
+                    let now = now_ms();
+                    let prev = LAST_DOWN_MS.swap(now, Ordering::Relaxed);
+                    let was_armed = ARMED.swap(false, Ordering::Relaxed);
+                    let is_repeat = !was_armed && now.saturating_sub(prev) < REPEAT_WINDOW_MS;
+                    if !is_repeat {
                         if let Some(cb) = CALLBACK.get() {
                             cb();
                         }

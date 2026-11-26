@@ -166,14 +166,19 @@ async function showPaletteAt(x, y, r, g, b, slot) {
   paletteRoot.style.transformOrigin = `${originX} ${originY}`;
 
   await win.setPosition(new PhysicalPosition(wx, wy));
+  // Shield first so it sits under the palette and catches outside presses.
+  await invoke("show_shield").catch((e) => console.warn("show_shield:", e));
   await win.show();
   paletteRoot.classList.add("open");
   await win.setFocus();
 }
 
-// Rust hides the window on focus loss; reset the open state so the next
-// show animates again.
-window.addEventListener("blur", () => paletteRoot.classList.remove("open"));
+// Open state is reset by Rust's `palette-hidden` event (see bootstrap), not by
+// DOM blur: forcing foreground on Windows can bounce focus for a moment after
+// show(), and a blur-driven reset then left the window shown at opacity 0.
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") invoke("dismiss_palette").catch(() => {});
+});
 
 // The size only changes when the content or the target monitor's scale does;
 // skipping the resize round trips otherwise keeps opening snappy.
@@ -288,6 +293,8 @@ async function bootstrap() {
     const { x, y, r, g, b, slot } = evt.payload;
     showPaletteAt(x, y, r, g, b, slot);
   });
+
+  listen("palette-hidden", () => paletteRoot.classList.remove("open"));
 
   listen("qr-scan-status", (evt) => {
     const { scanning, message } = evt.payload;

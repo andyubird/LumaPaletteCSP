@@ -36,6 +36,22 @@
         "visible": false,
         "transparent": false,
         "focus": true
+      },
+      {
+        "label": "shield",
+        "title": "Luma Palette",
+        "url": "shield.html",
+        "width": 1,
+        "height": 1,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "transparent": true,
+        "shadow": false,
+        "focus": false,
+        "focusable": false
       }
     ],
     "security": {
