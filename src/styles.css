@@ -11,6 +11,9 @@ html, body {
   user-select: none;
   overflow: hidden;
   -webkit-user-select: none;
+  /* Pen/touch pointers get pointercancel'd mid-drag unless the browser is told
+     no pan/zoom gestures live here; mouse input is unaffected either way. */
+  touch-action: none;
 }
 
 body {
